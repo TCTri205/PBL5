@@ -17,45 +17,45 @@ sequenceDiagram
     participant Pi as Raspberry Pi 4 (Client)
     participant Laptop as Laptop (WS Server)
     
-    Note over Pi: Chạy loop nhận diện
-    Cam->>Pi: Capture Frame (OpenCV)
-    Note over Pi: Tiền xử lý & Inference (ONNX)
+    Note over Pi: Chạy loop nhận diện (cam_stream.py)
+    Cam->>Pi: Capture Video Frame (OpenCV)
+    Note over Pi: Tiền xử lý & Inference (ONNX Runtime)
     Pi->>Pi: Phân loại: "Cam" (98%)
     Pi->>Laptop: Gửi JSON qua WebSocket {label: "cam", conf: 0.98}
-    Laptop-->>Pi: Ack / Phản hồi (Optionally)
+    Laptop-->>Pi: Phản hồi Acknowledgement
+    Note over Laptop: Hiển thị kết quả & Lưu logs
 ```
 
 ## 🔌 Cấu hình Phần cứng (Hardware)
 
-* **Camera**: Khuyên dùng **USB Webcam** (Cắm và chạy) hoặc **Pi Camera Module** (CSI port).
-* **Kết nối**: Pi 4 và Laptop nên ở trong cùng một mạng LAN/Wifi để đảm bảo độ trễ thấp nhất.
+* **Camera**: Khuyên dùng **USB Webcam** (Cắm và chạy) cho độ ổn định cao hoặc **Pi Camera Module 3**.
+* **Kết nối**: Pi 4 và Laptop cần ở trong cùng một mạng LAN/Wifi. Sử dụng IP tĩnh hoặc mDNS (`.local`) để kết nối ổn định.
 
 ## 🛠️ Thành phần Phần mềm (Software Components)
 
 ### 1. Tại Raspberry Pi (Inference Loop)
 
-Dựa trên script `pi_inference.py`, chúng ta sẽ tạo thêm một module `cam_stream.py`:
+Sử dụng script `cam_stream.py` để kết nối các module:
 
-* **OpenCV**: Sử dụng `cv2.VideoCapture(0)` để lấy luồng video.
-
-* **Websockets Client**: Sử dụng thư viện `websockets` (asyncio) để duy trì kết nối với Laptop.
+* **OpenCV**: Capture frame từ `/dev/video0`.
+* **FruitClassifier**: Module xử lý AI dựa trên ONNX Runtime.
+* **Websockets Client**: Duy trì kết nối non-blocking tới laptop.
 
 ### 2. Tại Laptop (WebSocket Server)
 
-Laptop chạy một script Python (`server.py`) để lắng nghe kết quả:
+Chạy `server.py` để làm trung tâm tiếp nhận:
 
-* Nhận dữ liệu JSON.
-
-* Xử lý logic tiếp theo (Lưu log, hiển thị thông báo, hoặc điều khiển thiết bị khác).
+* **Async Server**: Xử lý đồng thời nhiều kết nối nếu cần.
+* **Data Processing**: Phân tích log, cảnh báo nếu độ tin cậy thấp.
 
 ## 🚀 Quy trình Triển khai
 
-1. **Bước 1**: Khởi chạy WebSocket Server trên Laptop (IP cố định hoặc `.local`).
-2. **Bước 2**: Khởi chạy script Camera Stream trên Pi.
-3. **Bước 3**: Pi tự động chụp ảnh -> Phân loại -> Gửi kết quả về Laptop theo chu kỳ hoặc khi phát hiện có trái cây.
+1. **Bước 1**: Khởi chạy WebSocket Server trên Laptop: `python server.py`.
+2. **Bước 2**: Khởi chạy script Camera Stream trên Pi: `python cam_stream.py`.
+3. **Bước 3**: Giám sát kết quả hiển thị trên terminal của Laptop.
 
-## 📌 Lưu ý về Hiệu suất
+## 📌 Thông số Hiệu suất (Target)
 
-* **Tốc độ khung hình (FPS)**: Trên Pi 4 với ONNX Runtime, tốc độ classification có thể đạt 5-10 FPS tùy thuộc vào độ phức tạp của mô hình.
-
-* **Độ trễ (Latency)**: Giao tiếp WebSocket qua Wifi nội bộ có độ trễ cực thấp (< 20ms).
+* **FPS**: 5-10 frame mỗi giây.
+* **Latency**: < 200ms từ lúc chụp ảnh đến lúc hiển thị kết quả trên server.
+* **Cân bằng tải**: Tối ưu CPU Pi với `asyncio.sleep` phù hợp (0.1 - 0.2s).

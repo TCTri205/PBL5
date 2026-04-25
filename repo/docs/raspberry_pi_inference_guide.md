@@ -1,55 +1,42 @@
-# Hướng Dẫn Triển Khai YOLO Classification trên Raspberry Pi
+# Hướng dẫn Triển khai YOLO Inference trên Raspberry Pi
 
-Tài liệu này hướng dẫn cách đưa mô hình đã huấn luyện từ Google Colab về chạy trực tiếp trên Raspberry Pi 4 để nhận diện trái cây xanh (Cam, Chanh, Quýt).
+Tài liệu này tập trung vào khía cạnh chạy mô hình AI (ONNX) để phân loại trái cây trên Raspberry Pi.
 
-## 1. Chuẩn bị Mô hình
+## 🏗️ Kiến trúc Inference
 
-Sau khi hoàn tất training trên Colab, bạn cần tải file mô hình đã export sang định dạng ONNX về máy tính, sau đó upload lên Raspberry Pi.
+Để đạt hiệu suất cao nhất trên CPU ARM, chúng ta sử dụng **ONNX Runtime** làm engine thực thi chính thay vì sử dụng full YOLO backend của Ultralytics.
 
-* **File cần thiết**: `best.onnx` (được tạo ra ở Cell 6 của notebook training).
-* **Vị trí khuyên dùng trên Pi**: `~/pbl5_system/model/best.onnx`.
+### Quy trình (Pipeline)
 
-## 2. Cài đặt Thư viện trên Pi
+1. **RGB Image** (320x320)
+2. **Normalization** (/255.0)
+3. **Inference** (ONNX Session)
+4. **Argmax** (Lấy index có xác suất cao nhất)
 
-Mở terminal trên Raspberry Pi (qua SSH) và thực hiện các lệnh sau:
+## 📁 Chuẩn bị Model
+
+1. **Train** mô hình trên Google Colab.
+2. **Export** sang ONNX: `model.export(format='onnx', imgsz=320, simplify=True)`.
+3. **Tải về**: Lấy file `best.onnx` từ Colab.
+4. **Deploy**: Copy file vào thư mục `~/pbl5_system/model/` trên Pi.
+
+## 🚀 Chạy thử nghiệm
+
+Sử dụng script `pi_inference.py` để kiểm tra với 1 ảnh tĩnh:
 
 ```bash
-# Truy cập vào môi trường ảo đã tạo ở Setup Guide
-cd ~/pbl5_system
 source venv/bin/activate
-
-# Cài đặt các thư viện bổ trợ cho inference
-pip install onnxruntime opencv-python-headless numpy
-```
-
-> [!NOTE]
-> Chúng ta sử dụng `onnxruntime` thay vì `ultralytics` trên Pi để giảm dung lượng cài đặt và tối ưu tốc độ chạy trên CPU.
-
-## 3. Sử dụng Script Inference
-
-Tôi đã chuẩn bị sẵn script `pi_inference.py` trong thư mục `repo/`. Bạn có thể copy file này vào thư mục dự án trên Pi.
-
-### Chạy kiểm tra với ảnh cụ thể
-
-```bash
 python pi_inference.py model/best.onnx test_image.jpg
 ```
 
-### Script hỗ trợ
+## 🔍 Tối ưu hóa (Tips)
 
-* **Tự động Pre-processing**: Resize ảnh về 320x320 và chuẩn hóa dữ liệu.
+- **Input Size**: Sử dụng `imgsz=224` hoặc `imgsz=320` thay vì `640` để tăng tốc độ (giảm 2-3 lần latency).
+- **Quantization**: Có thể sử dụng INT8 Quantization (Tuy nhiên cần calibrate để tránh giảm độ chính xác).
+- **Multi-threading**: ONNX Runtime tự động tối ưu sử dụng 4 nhân của Pi 4.
 
-* **Confidence Threshold**: Mặc định là 0.5. Nếu độ tin cậy thấp hơn, script sẽ trả về `unknown`.
-* **Tự động Pre-processing**: Resize ảnh về 320x320 và chuẩn hóa dữ liệu.
-* **Confidence Threshold**: Mặc định là 0.5. Nếu độ tin cậy thấp hơn, script sẽ trả về `unknown`.
-* **Tối ưu CPU**: Sử dụng `CPUExecutionProvider` của ONNX Runtime.
+## 🔗 Liên kết chi tiết
 
-## 4. Tích hợp vào Hệ thống (Gợi ý)
-
-Bạn có thể kết hợp script này với **Camera Module** hoặc **WebSocket Server**:
-
-* **Camera**: Sử dụng `opencv` để capture frame từ camera.
-* **Websocket**: Khi nhận được tín hiệu từ Server, Pi sẽ chụp ảnh, phân loại và gửi kết quả về qua WebSocket.
-
----
-*Mẹo: Nếu bạn muốn chạy nhanh hơn nữa, hãy cân nhắc sử dụng các kit tăng tốc phần cứng như Google Coral Edge TPU.*
+- [API Reference: pi_inference.py](./implementation/pi_inference.md)
+- [Camera Stream Integration](./implementation/cam_stream.md)
+- [Xử lý sự cố về AI/Model](./troubleshooting.md#model-inference)
