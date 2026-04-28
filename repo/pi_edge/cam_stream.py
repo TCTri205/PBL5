@@ -6,6 +6,7 @@ import websockets
 import os
 import sys
 import logging
+import argparse
 from concurrent.futures import ThreadPoolExecutor
 
 # Ensure fruit_classifier can be imported from the current directory
@@ -15,32 +16,42 @@ from fruit_classifier import FruitClassifier
 # Cấu hình logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
+
 class CameraStreamer:
-    def __init__(self, model_path, server_url, confidence_thresh=0.5, resolution=(640, 480)):
+    def __init__(
+        self,
+        model_path,
+        server_url,
+        device_id="pi-edge-01",
+        confidence_thresh=0.5,
+        resolution=(640, 480),
+    ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
         """
+        logger.info(f"🧠 Loading model from: {model_path}")
         self.classifier = FruitClassifier(model_path)
         self.server_url = server_url
+        self.device_id = device_id
         self.confidence_thresh = confidence_thresh
         self.resolution = resolution
         self.cap = None
         self.websocket = None
-        self.executor = ThreadPoolExecutor(max_workers=1) # Chạy inference trên thread riêng
+        self.executor = ThreadPoolExecutor(
+            max_workers=1
+        )  # Chạy inference trên thread riêng
 
     async def connect(self):
         """Duy trì kết nối WebSocket tới server."""
         try:
             logger.info(f"🔄 Connecting to {self.server_url}...")
             self.websocket = await websockets.connect(
-                self.server_url, 
-                ping_interval=20, 
-                ping_timeout=10
+                self.server_url, ping_interval=20, ping_timeout=10
             )
             logger.info("✅ Connection established!")
             return True
@@ -54,30 +65,48 @@ class CameraStreamer:
             return
 
         payload = {
-            "device_id": "pi-edge-01",
+            "device_id": self.device_id,
             "frame_id": frame_id,
             "timestamp": time.time(),
             "label": label,
-            "confidence": float(confidence)
+            "confidence": float(confidence),
         }
-        
+
         try:
             await self.websocket.send(json.dumps(payload))
             logger.info(f"📤 Sent: {label.upper()} ({confidence:.1%})")
         except Exception as e:
             logger.warning(f"⚠️  Error sending: {e}")
 
-    async def run_pipeline(self):
-        """Vòng lặp: Chụp ảnh -> Phân loại (Async) -> Gửi kết quả."""
-        self.cap = cv2.VideoCapture(0)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+    def init_camera(self, manual_idx=None):
+        """Thử mở camera. Nếu manual_idx được cung cấp, dùng nó trước."""
+        indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
         
-        if not self.cap.isOpened():
-            logger.error("❌ Error: Could not open camera.")
+        for idx in indices:
+            logger.info(f"Trying to open camera at index {idx}...")
+            cap = cv2.VideoCapture(idx)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+                logger.info(f"✅ Camera started at index {idx}")
+                return cap
+            cap.release()
+            
+        # Fallback to auto-discovery if manual index failed
+        if manual_idx is not None:
+            logger.warning(f"⚠️  Manual index {manual_idx} failed. Falling back to auto-discovery...")
+            return self.init_camera(manual_idx=None)
+            
+        return None
+
+    async def run_pipeline(self, cam_idx=None):
+        """Vòng lặp: Chụp ảnh -> Phân loại (Async) -> Gửi kết quả."""
+        self.cap = self.init_camera(manual_idx=cam_idx)
+
+        if not self.cap:
+            logger.error("❌ Error: Could not open any camera index.")
             return
 
-        logger.info(f"📹 Camera started at {self.resolution[0]}x{self.resolution[1]}")
         frame_id = 0
         loop = asyncio.get_running_loop()
 
@@ -88,13 +117,12 @@ class CameraStreamer:
                     logger.warning("⚠️  Failed to grab frame.")
                     break
 
-                # Chạy inference trong ThreadPool để không block event loop
-                # Điều này rất quan trọng để duy trì kết nối WebSocket (ping/pong)
+                # Chạy inference trong ThreadPool
                 label, confidence = await loop.run_in_executor(
-                    self.executor, 
-                    self.classifier.predict, 
-                    frame, 
-                    self.confidence_thresh
+                    self.executor,
+                    self.classifier.predict,
+                    frame,
+                    self.confidence_thresh,
                 )
 
                 # Gửi nếu đạt ngưỡng
@@ -102,8 +130,6 @@ class CameraStreamer:
                     await self.send_result(label, confidence, frame_id)
 
                 frame_id += 1
-                
-                # Điều chỉnh tốc độ (~5 FPS để tránh overload CPU Raspberry Pi)
                 await asyncio.sleep(0.1)
 
         except Exception as e:
@@ -117,31 +143,72 @@ class CameraStreamer:
         self.executor.shutdown(wait=False)
         logger.info("🛑 Pipeline stopped.")
 
+
 async def main():
-    # Cấu hình - Thay đổi IP laptop của bạn tại đây hoặc qua biến môi trường
-    MODEL = os.path.join(os.path.dirname(__file__), "model", "best.onnx")
-    SERVER_IP = os.environ.get('SERVER_IP', '192.168.1.10')
-    SERVER = f"ws://{SERVER_IP}:8765"
-    
-    if os.environ.get('TESTING'):
-        SERVER = "ws://127.0.0.1:8765"
-    
-    if not os.path.exists(MODEL):
-        logger.error(f"❌ Model file not found at {MODEL}. Please check the path.")
+    parser = argparse.ArgumentParser(
+        description="Raspberry Pi Fruit Classification Streamer"
+    )
+    parser.add_argument(
+        "--server", type=str, default="192.168.1.10", help="Laptop Server IP"
+    )
+    parser.add_argument("--port", type=int, default=8765, help="WebSocket Port")
+    parser.add_argument("--model", type=str, default=None, help="Path to ONNX model")
+    parser.add_argument(
+        "--device-id", type=str, default="pi-edge-01", help="Unique ID for this Pi"
+    )
+    parser.add_argument(
+        "--resolution",
+        type=str,
+        default="640x480",
+        help="Camera resolution (width x height)",
+    )
+    parser.add_argument(
+        "--cam-idx", type=int, default=None, help="Force specific camera index"
+    )
+
+    args = parser.parse_args()
+
+    # Parse resolution
+    try:
+        res_w, res_h = map(int, args.resolution.split("x"))
+    except ValueError:
+        logger.error("Invalid resolution format. Use WxH (e.g., 640x480)")
         return
 
-    streamer = CameraStreamer(model_path=MODEL, server_url=SERVER)
-    
+    # Mặc định tìm model trong thư mục model/
+    if args.model is None:
+        MODEL = os.path.join(os.path.dirname(__file__), "model", "best.onnx")
+    else:
+        MODEL = args.model
+
+    SERVER = f"ws://{args.server}:{args.port}"
+
+    if os.environ.get("TESTING"):
+        SERVER = "ws://127.0.0.1:8765"
+
+    if not os.path.exists(MODEL):
+        logger.error(f"❌ Model file not found at {MODEL}")
+        logger.info("💡 Please ensure the model exists or provide path with --model")
+        return
+
+    streamer = CameraStreamer(
+        model_path=MODEL,
+        server_url=SERVER,
+        device_id=args.device_id,
+        resolution=(res_w, res_h),
+    )
+
     while True:
         try:
             if await streamer.connect():
-                await streamer.run_pipeline()
+                await streamer.run_pipeline(cam_idx=args.cam_idx)
             else:
                 logger.info(f"Reconnecting to {SERVER} in 5 seconds...")
                 await asyncio.sleep(5)
         except Exception as e:
             logger.error(f"Main loop error: {e}")
             await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     try:

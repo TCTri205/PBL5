@@ -50,12 +50,23 @@ Chạy `server.py` để làm trung tâm tiếp nhận:
 
 ## 🚀 Quy trình Triển khai
 
-1. **Bước 1**: Khởi chạy WebSocket Server trên Laptop: `python server.py`.
-2. **Bước 2**: Khởi chạy script Camera Stream trên Pi: `python cam_stream.py`.
+1. **Bước 1**: Khởi chạy WebSocket Server trên Laptop:
+
+   ```bash
+   python start_server.py
+   ```
+
+2. **Bước 2**: Khởi chạy script Camera Stream trên Pi:
+
+   ```bash
+   # Tìm IP của laptop bằng lệnh ipconfig (Windows) hoặc ifconfig (Linux)
+   python start_pi.py --server <IP_LAPTOP> --resolution 320x320
+   ```
+
 3. **Bước 3**: Giám sát kết quả hiển thị trên terminal của Laptop.
 
 ## 📌 Thông số Hiệu suất (Target)
 
 * **FPS**: 5-10 frame mỗi giây.
 * **Latency**: < 200ms từ lúc chụp ảnh đến lúc hiển thị kết quả trên server.
-* **Cân bằng tải**: Tối ưu CPU Pi với `asyncio.sleep` phù hợp (0.1 - 0.2s).
+* **Cân bằng tải**: Tối ưu CPU Pi với `asyncio.sleep` phù hợp (0.1s).

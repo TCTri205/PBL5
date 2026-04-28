@@ -13,35 +13,34 @@ Dự án nhằm xây dựng một hệ thống tự động hóa quá khứ phâ
 - **Camera**: Thu thập hình ảnh thời gian thực của trái cây.
 - **Laptop (`laptop_server/`)**: Trạm quản lý, giám sát và điều khiển.
 
-### Cấu trúc Thư mục Đề xuất
+### Cấu trúc Thư mục Hiện tại
 
 ```text
 /repo
   ├── pi_edge/          # Chứa code và model chạy trên Raspberry Pi
-  │   ├── model/        # Thư mục lưu trữ model .onnx
-  │   ├── cam_stream.py # Script xử lý luồng camera và gửi kết quả
-  │   ├── fruit_classifier.py # Logic nhận diện (đã tối ưu hóa bộ nhớ)
-  │   └── requirements.txt
+  │   ├── model/        # Thư mục lưu trữ model .onnx (best.onnx)
+  │   ├── cam_stream.py # Pipeline camera + inference + websocket
+  │   └── fruit_classifier.py # Logic nhận diện ONNX (đã tối ưu)
   ├── laptop_server/    # Chứa code chạy trên Laptop
-  │   └── server.py     # WebSocket server nhận dữ liệu từ Pi
-  └── docs/             # Tài liệu hướng dẫn
+  │   └── server.py     # WebSocket server nhận dữ liệu
+  ├── start_pi.py       # Script khởi động nhanh cho Pi
+  ├── start_server.py   # Script khởi động nhanh cho Laptop
+  └── docs/             # Tài liệu hướng dẫn chi tiết
 ```
 
 ## 🎯 Mục tiêu Hệ thống
 
-1. **Nhận diện chính xác**: Phân loại các loại trái cây mục tiêu (ví dụ: Cam, Chanh, Quýt) bằng mô hình YOLO đã được tối ưu hóa (ONNX).
-2. **Xử lý các loại khác (Thresholding)**: Sử dụng ngưỡng tin cậy (threshold) để phân loại các vật thể không nằm trong danh sách nhận diện vào nhóm "Other" (Khác). Điều này giúp hệ thống linh hoạt và không bị nhầm lẫn khi gặp vật thể lạ.
-3. **Quản lý tập trung**: Dễ dàng điều khiển và theo dõi trạng thái hệ thống từ Laptop thông qua giao thức WebSocket.
-4. **Tốc độ đáp ứng**: Đảm bảo thời gian nhận diện và gửi kết quả đủ nhanh để tích hợp với cơ cấu chấp hành trên băng chuyền.
+1. **Nhận diện chính xác**: Phân loại Cam, Chanh, Quýt bằng YOLO ONNX.
+2. **Xử lý vật thể lạ**: Tự động chuyển vào nhóm "unknown" nếu độ tin cậy < 0.5.
+3. **Quản lý tập trung**: Giám sát qua WebSocket Server.
+4. **Tốc độ đáp ứng**: Đã đạt ~10 FPS trên Raspberry Pi 4.
 
-## 🚀 Mục tiêu Hiện tại (Milestones)
+## ✅ Thành tựu Hiện tại (Milestones)
 
-Mục tiêu trọng tâm trong giai đoạn này là thiết lập luồng dữ liệu cơ bản từ thiết bị đầu cuối đến trạm giám sát:
-
-- [ ] **Chạy Model trên Raspberry Pi**: Tối ưu hóa và thực thi mô hình nhận diện (ONNX Runtime) trực tiếp trên phần cứng Pi 4.
-- [ ] **Thu thập hình ảnh từ Camera**: Capture frame từ camera gắn trên Pi với độ trễ thấp.
-- [ ] **Thực hiện Nhận diện**: Xử lý hình ảnh và đưa ra kết quả phân loại (Label + Confidence).
-- [ ] **Gửi kết quả về Laptop**: Thiết lập kênh truyền thông (WebSocket) để gửi kết quả nhận diện từ Pi về Laptop ngay lập tức.
+- [x] **Chạy Model trên Raspberry Pi**: Tối ưu hóa ONNX Runtime (CPU).
+- [x] **Thu thập hình ảnh từ Camera**: Hỗ trợ camera đa chỉ số (0, 1, 2).
+- [x] **Thực hiện Nhận diện**: Pipeline ThreadPool non-blocking.
+- [x] **Gửi kết quả về Laptop**: Giao thức WebSocket ổn định với khả năng tự kết nối lại.
 
 ---
-*Tài liệu này sẽ được cập nhật liên tục theo tiến độ của dự án.*
+*Tài liệu này phản ánh trạng thái hoàn thiện cuối cùng của dự án.*

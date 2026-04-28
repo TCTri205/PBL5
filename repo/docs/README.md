@@ -76,28 +76,28 @@ graph TD
 #### 3. Triển khai trên Pi
 
 ```bash
-# Copy model best.onnx lên Pi
-cd ~/pbl5_system
+# Đảm bảo model best.onnx nằm trong repo/pi_edge/model/
+cd ~/pbl5_project/repo
 source venv/bin/activate
-pip install onnxruntime opencv-python-headless numpy
+pip install -r requirements.txt
 
-# Chạy inference
-python pi_inference.py model/best.onnx test_image.jpg
+# Chạy thử nghiệm phân loại ảnh tĩnh
+python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_image.jpg
 ```
 
 #### 4. Khởi chạy WebSocket Server (trên Laptop)
 
 ```bash
-python server.py
+cd repo
+python start_server.py
 # Server lắng nghe tại cổng 8765
 ```
 
 #### 5. Streaming Camera (trên Pi)
 
 ```bash
-# Tích hợp camera và gửi kết quả qua WebSocket
-python cam_stream.py
-# Chi tiết: docs/implementation/cam_stream.md
+# Tự động gửi kết quả qua WebSocket
+python start_pi.py --server <IP_LAPTOP>
 ```
 
 ## 🎓 Đường Dẫn Học Tập (Learning Path)

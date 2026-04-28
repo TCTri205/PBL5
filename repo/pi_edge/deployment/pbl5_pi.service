@@ -1,0 +1,18 @@
+[Unit]
+Description=PBL5 Raspberry Pi Edge Streamer
+After=network.target
+
+[Service]
+# Đường dẫn tới thư mục repo của bạn trên Pi
+WorkingDirectory=/home/pi/pbl5_project/repo
+# Đường dẫn tới python trong môi trường ảo
+ExecStart=/home/pi/pbl5_project/repo/venv/bin/python start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
+
+Restart=always
+RestartSec=5
+StandardOutput=inherit
+StandardError=inherit
+User=pi
+
+[Install]
+WantedBy=multi-user.target

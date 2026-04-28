@@ -42,12 +42,17 @@ The system transitions from Cloud (Colab) to Edge (Raspberry Pi):
 
 - **Edge Device**: Raspberry Pi 4 (4GB+ RAM recommended).
 - **Inference Engine**: **ONNX Runtime** (CPUExecutionProvider).
-- **Standalone Script**: `repo/pi_inference.py` for lightweight classification.
+- **Standalone Script**: `repo/pi_edge/fruit_classifier.py` for lightweight classification.
 - **Communication**: WebSocket protocol for real-time reporting to a monitoring server.
 - **Guides**:
-  - [System Integration Plan](./system_integration_plan.md)
+  - [System Integration Plan](./system_integration_plan.md) ⭐
   - [Raspberry Pi Setup Guide](./raspberry_pi_setup_guide.md)
   - [Raspberry Pi Inference Guide](./raspberry_pi_inference_guide.md)
+
+## 📦 Running the System
+
+1. **Server (Laptop)**: `python start_server.py`
+2. **Edge (Pi)**: `python start_pi.py --server <IP_LAPTOP>`
 
 ## 📦 Dependencies
 

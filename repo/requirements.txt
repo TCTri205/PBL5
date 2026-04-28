@@ -1,0 +1,5 @@
+# Unified Requirements for PBL5
+opencv-python-headless
+onnxruntime
+websockets
+numpy

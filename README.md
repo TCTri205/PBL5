@@ -22,21 +22,22 @@ Detailed information about the technologies and architectural decisions can be f
 
 ## 🌏 Raspberry Pi Deployment & Integration
 
-Follow these guides to move from research to a real-world system:
+Hệ thống đã được tối ưu hóa và kiểm tra kỹ lưỡng cho việc triển khai thực tế:
 
-- **[Raspberry Pi Inference Guide](./repo/docs/raspberry_pi_inference_guide.md)**: Manual setup and script usage.
-- **[System Integration Plan](./repo/docs/system_integration_plan.md)**: **Full End-to-End Design** (Camera capture + Pi Inference + Laptop communication).
+- **[Quick Start Checklist](./repo/docs/deployment_checklist.md)**: Các bước kiểm tra nhanh trước khi chạy.
+- **[Raspberry Pi Setup Guide](./repo/docs/raspberry_pi_setup_guide.md)** ⭐: Thiết lập phần cứng và môi trường.
+- **[System Integration Plan](./repo/docs/system_integration_plan.md)**: Luồng dữ liệu và thiết lập WebSocket.
 
-## 🚀 Getting Started
+## 🚀 Running the System
 
-1. Open `YOLO_Training_Colab_v2.ipynb` in [Google Colab](https://colab.research.google.com/).
-2. Mount your Google Drive and set the `DRIVE_SOURCE` path to your raw dataset.
-3. Run the cells to process data and begin training.
-4. Use `YOLO_Inference_Colab.ipynb` to run predictions using your trained `best.pt` or `best.onnx` model.
+Tại thư mục `repo/`, sử dụng các script tiện ích:
 
-## 🧪 Dataset
+1. **Server**: `python start_server.py`
+2. **Edge (Pi)**: `python start_pi.py --server <IP_LAPTOP>`
 
-The model currently expects three classes of fruits:
+## 🧪 Dataset & Classes
+
+Mô hình phân loại chính xác 3 loại trái cây xanh:
 
 - `cam` (Orange)
 - `chanh` (Lime)
