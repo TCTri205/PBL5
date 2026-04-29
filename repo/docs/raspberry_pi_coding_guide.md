@@ -63,13 +63,6 @@ sudo systemctl enable pbl5_pi
 sudo systemctl start pbl5_pi
 ```
 
-Sau đó:
-
-```bash
-sudo systemctl enable pbl5
-sudo systemctl start pbl5
-```
-
 ---
 
 - [Quay lại README](../README.md)
