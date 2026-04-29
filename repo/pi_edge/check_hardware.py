@@ -17,6 +17,16 @@ def check_dependencies():
     except ImportError as e:
         logger.error(f"❌ Missing dependency: {e}")
         return False
+    
+    # Check for libgomp (critical for ONNX)
+    if sys.platform == "linux":
+        import subprocess
+        try:
+            subprocess.check_output(["ldconfig", "-p | grep libgomp"], shell=True)
+            logger.info("✅ libgomp found.")
+        except Exception:
+            logger.warning("⚠️  libgomp might be missing. If ONNX fails, run: sudo apt install libgomp1")
+            
     return True
 
 def check_model():
@@ -43,12 +53,29 @@ def check_camera():
     logger.error("❌ No working camera found at indices 0, 1, or 2.")
     return False
 
+def check_power():
+    """Kiểm tra nguồn điện (chỉ trên Raspberry Pi)."""
+    if sys.platform == "linux":
+        logger.info("🔍 Checking power supply stability...")
+        try:
+            # vcgencmd get_throttled returns hex. If not 0, there's a problem.
+            import subprocess
+            output = subprocess.check_output(["vcgencmd", "get_throttled"]).decode()
+            status = output.split("=")[1].strip()
+            if status == "0x0":
+                logger.info("✅ Power supply is stable.")
+            else:
+                logger.warning(f"⚠️  Power issue detected (throttled={status}). Check your power supply!")
+        except Exception:
+            pass # vcgencmd might not be available
+
 def main():
     logger.info("=== PBL5 Hardware Diagnostic Tool ===")
     
     deps = check_dependencies()
     model = check_model()
     cam = check_camera()
+    check_power()
     
     print("\n--- Summary ---")
     print(f"Dependencies: {'OK' if deps else 'FAIL'}")

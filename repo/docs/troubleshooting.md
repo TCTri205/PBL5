@@ -16,7 +16,7 @@ Hướng dẫn giải quyết các vấn đề thường gặp khi phát triển
 
 - **Workflow hoàn chỉnh**: [System Integration Plan](./system_integration_plan.md)
 - **Camera Streaming**: [cam_stream.md](./implementation/cam_stream.md)
-- **WebSocket Client**: [raspberry_pi_setup_guide.md](./raspberry_pi_setup_guide.md)
+- **API Reference**: [fruit_classifier.md](./implementation/fruit_classifier.md)
 - **Setup Raspberry Pi**: [raspberry_pi_setup_guide.md](./raspberry_pi_setup_guide.md)
 
 ---
@@ -346,7 +346,7 @@ Load model from model/best.onnx failed
 
    ```bash
    # Dùng ảnh trong tập train để test
-   python pi_inference.py model/best.onnx test_known_good.jpg
+   python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_known_good.jpg
    ```
 
 4. **Kiểm tra preprocessing:**
@@ -602,7 +602,7 @@ time.sleep(0.1)  # 10 FPS max
 # Tìm và kill process python
 top  # Nhấn 'k' để kill
 # Hoặc
-pkill -f pi_inference.py
+pkill -f cam_stream.py
 ```
 
 ---

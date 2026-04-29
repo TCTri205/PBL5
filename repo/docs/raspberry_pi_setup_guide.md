@@ -51,7 +51,7 @@ ssh <USERNAME>@192.168.1.xxx
 sudo apt update && sudo apt upgrade -y
 
 # Cài đặt system dependencies cho OpenCV & ONNX
-sudo apt install -y libatlas-base-dev libopenjp2-7 libtiff5 libjpeg-dev libcap-dev
+sudo apt install -y libatlas-base-dev libopenjp2-7 libtiff5 libjpeg-dev libcap-dev libgomp1
 
 # Clone hoặc tải dự án
 git clone <URL_CUA_BAN> ~/pbl5_project
@@ -79,6 +79,11 @@ sudo nano /etc/dphys-swapfile
 sudo dphys-swapfile setup
 sudo dphys-swapfile swapon
 ```
+
+## ⚙️ 6. Cấu hình Tự động chạy (Auto-start)
+
+Nếu bạn sử dụng tệp service tại `repo/pi_edge/deployment/pbl5_pi.service`:
+- **Quan trọng**: Hãy kiểm tra và sửa lại `WorkingDirectory` và `ExecStart` để khớp với tên người dùng và đường dẫn thực tế trên Pi của bạn (mặc định là `/home/pi/...`).
 
 ## 🔗 Các bước tiếp theo
 

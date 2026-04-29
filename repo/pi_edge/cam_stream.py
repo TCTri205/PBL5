@@ -54,10 +54,20 @@ class CameraStreamer:
                 self.server_url, ping_interval=20, ping_timeout=10
             )
             logger.info("✅ Connection established!")
+            # Khởi tạo consumer task để giải phóng buffer (đọc ACK từ server)
+            self._consumer_task = asyncio.create_task(self._consume_messages())
             return True
         except Exception as e:
             logger.error(f"❌ Connection failed: {e}")
             return False
+
+    async def _consume_messages(self):
+        """Đọc và bỏ qua các message từ server để tránh đầy buffer."""
+        try:
+            async for _ in self.websocket:
+                pass
+        except Exception:
+            pass
 
     async def send_result(self, label, confidence, frame_id):
         """Gửi kết quả nhận diện sang laptop."""
@@ -88,6 +98,8 @@ class CameraStreamer:
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+                # Optimize for latency: Set buffer size to 1 if supported
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 logger.info(f"✅ Camera started at index {idx}")
                 return cap
             cap.release()
@@ -128,6 +140,11 @@ class CameraStreamer:
                 # Gửi nếu đạt ngưỡng
                 if label and label != "unknown":
                     await self.send_result(label, confidence, frame_id)
+                    
+                    # Kiểm tra nếu connection bị đóng giữa chừng
+                    if self.websocket and self.websocket.closed:
+                        logger.warning("⚠️  Websocket connection lost. Breaking pipeline...")
+                        break
 
                 frame_id += 1
                 await asyncio.sleep(0.1)
@@ -135,12 +152,21 @@ class CameraStreamer:
         except Exception as e:
             logger.error(f"🔥 Pipeline error: {e}")
         finally:
-            self.cleanup()
+            await self.cleanup()
 
-    def cleanup(self):
+    async def cleanup(self):
+        """Giải phóng tài nguyên (Camera, Websocket, Tasks)."""
+        if hasattr(self, '_consumer_task'):
+            self._consumer_task.cancel()
+            
         if self.cap:
             self.cap.release()
-        self.executor.shutdown(wait=False)
+            self.cap = None
+            
+        if self.websocket and not self.websocket.closed:
+            await self.websocket.close()
+            logger.info("🔌 Websocket connection closed.")
+            
         logger.info("🛑 Pipeline stopped.")
 
 
@@ -205,13 +231,29 @@ async def main():
             else:
                 logger.info(f"Reconnecting to {SERVER} in 5 seconds...")
                 await asyncio.sleep(5)
+            
+            # Tránh lặp quá nhanh nếu run_pipeline thoát sớm (vd: lỗi camera)
+            await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Main loop error: {e}")
             await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
+    import signal
+    
+    def handle_exit():
+        logger.info("\n🛑 Received shutdown signal. Exiting...")
+        sys.exit(0)
+        
+    # Catch both Ctrl+C and Systemd SIGTERM
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, lambda *_: handle_exit())
+        except (ValueError, RuntimeError):
+            pass # Ignore if not on main thread
+
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("\nExit by user.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")

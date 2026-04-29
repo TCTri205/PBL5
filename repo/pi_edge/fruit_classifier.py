@@ -26,8 +26,27 @@ class FruitClassifier:
         )
         self.input_name = self.session.get_inputs()[0].name
 
-        # Lấy tên lớp (mapping từ training)
-        self.class_names = class_names if class_names else ["cam", "chanh", "quyt"]
+        # Thử lấy tên lớp từ metadata của model (YOLO export thường có)
+        try:
+            model_meta = self.session.get_modelmeta().custom_metadata_map
+            if class_names:
+                self.class_names = class_names
+            elif "names" in model_meta:
+                # YOLO format: "{0: 'cam', 1: 'chanh', ...}" or JSON
+                import ast
+                import json
+                try:
+                    names_dict = ast.literal_eval(model_meta["names"])
+                except Exception:
+                    # Fallback for pure JSON metadata
+                    names_dict = json.loads(model_meta["names"].replace("'", '"'))
+                
+                self.class_names = [names_dict[i] for i in sorted(names_dict.keys())]
+                print(f"📦 Auto-loaded classes from model: {self.class_names}")
+            else:
+                self.class_names = ["cam", "chanh", "quyt"]
+        except Exception:
+            self.class_names = class_names if class_names else ["cam", "chanh", "quyt"]
 
     def preprocess(self, img: np.ndarray) -> np.ndarray:
         """

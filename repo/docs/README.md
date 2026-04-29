@@ -41,7 +41,7 @@ graph TD
 
 ### Thực Thi & Tham Chiếu
 
-- **[pi_inference.md](./implementation/pi_inference.md)** - API reference cho `pi_inference.py`
+- **[fruit_classifier.md](./implementation/fruit_classifier.md)** - API reference cho `fruit_classifier.py`
 - **[cam_stream.md](./implementation/cam_stream.md)** - Hướng dẫn streaming camera real-time
 
 ## 🚀 Bắt Đầu Nhanh (Quick Start)

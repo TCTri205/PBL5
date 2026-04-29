@@ -14,7 +14,7 @@ Tài liệu này hướng dẫn cách sử dụng script `cam_stream.py` để k
 Script `cam_stream.py` thực hiện một vòng lặp (loop) liên tục:
 
 1. **Capture**: Sử dụng OpenCV để lấy 1 frame từ camera.
-2. **Inference**: Sử dụng class `FruitClassifier` (từ `pi_inference.py`) để phân loại trái cây trong frame đó.
+2. **Inference**: Sử dụng class `FruitClassifier` (từ `fruit_classifier.py`) để phân loại trái cây trong frame đó.
 3. **Filter**: Chỉ lấy các kết quả có độ tin cậy (confidence) cao hơn ngưỡng quy định.
 4. **Send**: Gửi kết quả dưới dạng JSON qua WebSocket tới Laptop.
 
@@ -64,6 +64,6 @@ Mỗi khi nhận diện thành công, một gói tin JSON sẽ được gửi:
 
 ## 🔗 Liên kết liên quan
 
-- [API Reference: pi_inference.py](./pi_inference.md)
+- [API Reference: fruit_classifier.py](./fruit_classifier.md)
 - [Kế hoạch tích hợp hệ thống](../system_integration_plan.md)
 - [Xử lý sự cố về camera](../troubleshooting.md#camera-issues)

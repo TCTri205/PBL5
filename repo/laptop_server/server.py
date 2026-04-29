@@ -57,11 +57,15 @@ async def fruit_classification_handler(websocket):
 
 
 async def main():
-    # Lắng nghe trên tất cả các interface mạng tại port 8765
-    port = 8765
-    async with websockets.serve(fruit_classification_handler, "0.0.0.0", port):
+    import argparse
+    parser = argparse.ArgumentParser(description="PBL5 Fruit Classification Server")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8765, help="Port to listen (default: 8765)")
+    args = parser.parse_args()
+
+    async with websockets.serve(fruit_classification_handler, args.host, args.port):
         logger.info("🚀 [SERVER] Multi-class Fruit Classification Server is running...")
-        logger.info(f"📍 Listening at ws://0.0.0.0:{port}")
+        logger.info(f"📍 Listening at ws://{args.host}:{args.port}")
         await asyncio.Future()  # Chạy mãi mãi
 
 
