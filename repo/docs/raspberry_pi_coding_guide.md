@@ -50,29 +50,17 @@ Mẹo tối ưu hiệu suất:
 
 ## 🚀 5. Chạy tự động (Autostart)
 
-Để script chạy ngay khi Pi khởi động, sử dụng **systemd**:
+Để script chạy ngay khi Pi khởi động, sử dụng **systemd**. Chúng tôi đã chuẩn bị sẵn tệp mẫu tại:
+`repo/pi_edge/deployment/pbl5_pi.service`
 
+**Cách cài đặt:**
+1. Chỉnh sửa tệp service để khớp với user và IP của bạn.
+2. Copy vào hệ thống: `sudo cp pi_edge/deployment/pbl5_pi.service /etc/systemd/system/`
+3. Kích hoạt:
 ```bash
-sudo nano /etc/systemd/system/pbl5.service
-```
-
-Nội dung file:
-
-```ini
-[Unit]
-Description=PBL5 Fruit Classification
-After=network.target
-
-[Service]
-ExecStart=/home/tctri205/pbl5_system/venv/bin/python /home/tctri205/pbl5_system/cam_stream.py
-WorkingDirectory=/home/tctri205/pbl5_system
-StandardOutput=inherit
-StandardError=inherit
-Restart=always
-User=tctri205
-
-[Install]
-WantedBy=multi-user.target
+sudo systemctl daemon-reload
+sudo systemctl enable pbl5_pi
+sudo systemctl start pbl5_pi
 ```
 
 Sau đó:

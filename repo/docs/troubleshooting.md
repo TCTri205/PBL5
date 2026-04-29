@@ -252,13 +252,13 @@ Error: Model file model/best.onnx not found.
 
 ```bash
 # Kiểm tra đường dẫn
-ls -la ~/pbl5_system/model/
+ls -la ~/pbl5_project/repo/pi_edge/model/
 
 # Nếu chưa có model, export từ Colab
 # Tải best.onnx từ Google Drive
 
 # Tạo thư mục nếu chưa có
-mkdir -p ~/pbl5_system/model
+mkdir -p ~/pbl5_project/repo/pi_edge/model
 ```
 
 ---
@@ -534,7 +534,7 @@ ModuleNotFoundError: No module named 'xyz'
 
 ```bash
 # Activate venv
-source ~/pbl5_system/venv/bin/activate
+source ~/pbl5_project/repo/venv/bin/activate
 
 # Cài package
 pip install onnxruntime opencv-python-headless numpy
