@@ -7,7 +7,7 @@ Wants=network-online.target
 # Đường dẫn tới thư mục repo của bạn trên Pi (Thay đổi 'pi' nếu bạn dùng user khác)
 WorkingDirectory=/home/pi/pbl5_project/repo
 # Đường dẫn tới python trong môi trường ảo (Thay đổi 'pi' nếu bạn dùng user khác)
-ExecStart=/home/pi/pbl5_project/repo/venv/bin/python start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
+ExecStart=/home/pi/pbl5_project/repo/venv/bin/python /home/pi/pbl5_project/repo/start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
 
 Restart=always
 RestartSec=5
