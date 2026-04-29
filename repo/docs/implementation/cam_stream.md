@@ -36,16 +36,16 @@ resolution = (640, 480)
 ## 🛠️ Hướng dẫn chạy
 
 1. **Trên Laptop**:
-
+   
    ```bash
-   python server.py
+   python start_server.py
    ```
 
 2. **Trên Raspberry Pi**:
 
    ```bash
    source venv/bin/activate
-   python cam_stream.py
+   python start_pi.py --server <IP_LAPTOP>
    ```
 
 ## 📊 Định dạng dữ liệu gửi đi (JSON)

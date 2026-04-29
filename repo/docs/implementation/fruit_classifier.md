@@ -124,9 +124,9 @@ Inference time: 125.30 ms
 
 ```bash
 # Chạy inference trên Raspberry Pi
-cd ~/pbl5_system
+cd ~/pbl5_project/repo
 source venv/bin/activate
-python fruit_classifier.py model/best.onnx test_images/cam_01.jpg
+python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_images/cam_01.jpg
 ```
 
 ---
@@ -137,11 +137,13 @@ python fruit_classifier.py model/best.onnx test_images/cam_01.jpg
 
 ```python
 import sys
-sys.path.append('repo')
+import os
+# Đảm bảo import được fruit_classifier
+sys.path.append(os.path.abspath('pi_edge'))
 from fruit_classifier import FruitClassifier
 
 # Khởi tạo classifier
-classifier = FruitClassifier('model/best.onnx')
+classifier = FruitClassifier('pi_edge/model/best.onnx')
 
 # Phân loại ảnh
 label, confidence = classifier.predict('test.jpg')
