@@ -69,9 +69,20 @@ class CameraStreamer:
         except Exception:
             pass
 
+    @property
+    def is_ws_closed(self):
+        """Kiểm tra xem kết nối WebSocket có bị đóng hay không (tương thích mọi phiên bản)."""
+        if not self.websocket:
+            return True
+        # Tương thích cho websockets < 14.0
+        if hasattr(self.websocket, 'closed'):
+            return self.websocket.closed
+        # Tương thích cho websockets >= 14.0
+        return self.websocket.state.name == "CLOSED"
+
     async def send_result(self, label, confidence, frame_id):
         """Gửi kết quả nhận diện sang laptop."""
-        if not self.websocket or self.websocket.closed:
+        if self.is_ws_closed:
             return
 
         payload = {
@@ -142,7 +153,7 @@ class CameraStreamer:
                     await self.send_result(label, confidence, frame_id)
                     
                     # Kiểm tra nếu connection bị đóng giữa chừng
-                    if self.websocket and self.websocket.closed:
+                    if self.is_ws_closed:
                         logger.warning("⚠️  Websocket connection lost. Breaking pipeline...")
                         break
 
@@ -163,7 +174,7 @@ class CameraStreamer:
             self.cap.release()
             self.cap = None
             
-        if self.websocket and not self.websocket.closed:
+        if not self.is_ws_closed:
             await self.websocket.close()
             logger.info("🔌 Websocket connection closed.")
             
