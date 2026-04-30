@@ -171,6 +171,15 @@ sudo systemctl start pbl5_pi.service
 sudo systemctl status pbl5_pi.service
 ```
 
+> [!TIP]
+> **Các lệnh quản lý dịch vụ nhanh:**
+> - **Chạy dịch vụ**: `sudo systemctl start pbl5_pi.service`
+> - **Dừng dịch vụ**: `sudo systemctl stop pbl5_pi.service`
+> - **Khởi động lại**: `sudo systemctl restart pbl5_pi.service`
+> - **Bật tự động khởi chạy**: `sudo systemctl enable pbl5_pi.service`
+> - **Tắt tự động khởi chạy**: `sudo systemctl disable pbl5_pi.service`
+> - **Xem log thực tế (để debug)**: `sudo journalctl -u pbl5_pi.service -f`
+
 ---
 
 ## 🔗 Các bước tiếp theo
