@@ -13,7 +13,8 @@ def check_dependencies():
         import onnxruntime
         import websockets
         import numpy
-        logger.info("✅ Core dependencies found.")
+        import gpiozero
+        logger.info("✅ Core dependencies found (including gpiozero).")
     except ImportError as e:
         logger.error(f"❌ Missing dependency: {e}")
         return False

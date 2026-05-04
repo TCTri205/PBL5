@@ -20,30 +20,42 @@ async def fruit_classification_handler(websocket):
     client_addr = websocket.remote_address
     logger.info(f"[+] Client connected from: {client_addr}")
 
+    # Lưu vết frame_id cuối cùng để tránh log trùng (Idempotency)
+    last_processed_frames = {} # device_id -> frame_id
+
     try:
         async for message in websocket:
             try:
                 data = json.loads(message)
+                device_id = data.get("device_id", "unknown_pi")
+                frame_id = data.get("frame_id", "N/A")
+                
+                # Hàm helper gửi ACK
+                async def send_ack(fid):
+                    resp = {"status": "success", "timestamp": time.time(), "ack_frame": fid}
+                    await websocket.send(json.dumps(resp))
+
+                # Kiểm tra trùng lặp (nếu là retry)
+                if last_processed_frames.get(device_id) == frame_id:
+                    await send_ack(frame_id) # ACK lại cho client yên tâm
+                    continue
+                
+                # Xử lý log
                 label = data.get("label", "unknown")
                 confidence = data.get("confidence", 0.0)
-                frame_id = data.get("frame_id", "N/A")
+                conveyor_status = data.get("conveyor_status", "N/A")
                 pi_time = data.get("timestamp", time.time())
-
-                # Tính toán độ trễ (latency) từ Pi đến Laptop
                 latency = (time.time() - pi_time) * 1000
 
                 logger.info(
                     f"[{client_addr[0]}] Frame {frame_id}: "
-                    f"{label.upper()} ({confidence:.2%}) | Latency: {latency:.1f}ms"
+                    f"{label.upper()} ({confidence:.2%}) | "
+                    f"Conveyor: {conveyor_status} | Latency: {latency:.1f}ms"
                 )
 
-                # Gửi phản hồi (acknowledgement)
-                response = {
-                    "status": "success",
-                    "timestamp": time.time(),
-                    "ack_frame": frame_id,
-                }
-                await websocket.send(json.dumps(response))
+                # Gửi ACK SAU khi đã log xong (handshake hoàn tất)
+                last_processed_frames[device_id] = frame_id
+                await send_ack(frame_id)
 
             except json.JSONDecodeError:
                 logger.error(f"[!] Error: Received invalid JSON from {client_addr}")
