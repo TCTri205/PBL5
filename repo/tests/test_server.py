@@ -24,6 +24,7 @@ class TestLaptopServer(unittest.IsolatedAsyncioTestCase):
             "timestamp": time.time() - 0.05,  # 50ms latency
             "label": "cam",
             "confidence": 0.99,
+            "conveyor_status": "stopped",
         }
 
         # __aiter__ allows "async for message in websocket"
