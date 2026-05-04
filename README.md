@@ -26,7 +26,15 @@ Hệ thống đã được tối ưu hóa và kiểm tra kỹ lưỡng cho việ
 
 - **[Quick Start Checklist](./repo/docs/deployment_checklist.md)**: Các bước kiểm tra nhanh trước khi chạy.
 - **[Raspberry Pi Setup Guide](./repo/docs/raspberry_pi_setup_guide.md)** ⭐: Thiết lập phần cứng và môi trường.
+- **[Hardware Integration Plan](./repo/docs/implementation/hardware_integration_plan.md)**: Chi tiết về điều khiển băng chuyền và cảm biến.
 - **[System Integration Plan](./repo/docs/system_integration_plan.md)**: Luồng dữ liệu và thiết lập WebSocket.
+
+## ⚙️ Hardware Control
+
+Hệ thống tích hợp điều khiển băng chuyền tự động:
+- **Motor**: L298N (Pins 22, 23) để điều khiển di chuyển trái cây.
+- **Sensor**: E18-D80NK (Pin 17) để phát hiện vật thể và kích hoạt camera.
+- **An toàn**: Tự động dừng khẩn cấp (Emergency Stop) khi phát hiện kẹt băng chuyền hoặc lỗi cảm biến.
 
 ## 🚀 Running the System
 
