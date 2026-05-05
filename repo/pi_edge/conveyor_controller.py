@@ -71,6 +71,8 @@ class ServoSorter:
                 )
                 self.delays[label] = delay
                 self.servos[label].angle = 0
+                import time
+                time.sleep(0.2)  # Delay nhỏ để tránh sụt áp đồng loạt khi khởi tạo
             except Exception as e:
                 logger.error(f"❌ Không thể khởi tạo servo cho {label} trên pin {pin}: {e}")
 

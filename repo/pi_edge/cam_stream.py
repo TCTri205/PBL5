@@ -191,6 +191,9 @@ class CameraStreamer:
         loop = asyncio.get_running_loop()
 
         self.conveyor.start()
+        # Chờ camera và phần cứng ổn định (quan trọng để tránh sụt áp gây lỗi timeout)
+        logger.info("⏳ Waiting for hardware stabilization (2s)...")
+        await asyncio.sleep(2.0)
 
         try:
             while not self._stop_event.is_set():
@@ -207,7 +210,13 @@ class CameraStreamer:
                 # 3. Chụp ảnh
                 ret, frame = self.cap.read()
                 if not ret:
-                    logger.warning("⚠️ Failed to grab frame. Resuming cycle to clear object...")
+                    logger.warning("⚠️ Failed to grab frame. Clearing buffer and retrying...")
+                    # Thử giải phóng buffer nếu timeout nhẹ
+                    for _ in range(5): self.cap.grab() 
+                    ret, frame = self.cap.read()
+                    
+                if not ret:
+                    logger.warning("⚠️ Still failed to grab frame. Resuming cycle to clear object...")
                     # Vẫn cần chạy lại băng chuyền và đợi vật qua để tránh kẹt logic
                     self.conveyor.start()
                     await asyncio.sleep(self.resume_delay)
