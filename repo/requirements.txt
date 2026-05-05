@@ -1,6 +1,7 @@
 # Unified Requirements for PBL5
 opencv-python-headless
 onnxruntime
+aiohttp>=3.9
 websockets
 numpy
 gpiozero

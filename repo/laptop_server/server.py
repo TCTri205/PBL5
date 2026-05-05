@@ -1,8 +1,10 @@
 import asyncio
-import websockets
 import json
 import time
 import logging
+import argparse
+import os
+from aiohttp import web
 
 # Cấu hình logging
 logging.basicConfig(
@@ -12,77 +14,147 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Quản lý các kết nối
+dashboard_clients = set()
+last_processed_frames = {}  # device_id -> frame_id
 
-async def fruit_classification_handler(websocket):
-    """
-    Xử lý kết quả phân loại trái cây gửi từ các Raspberry Pi client.
-    """
-    client_addr = websocket.remote_address
-    logger.info(f"[+] Client connected from: {client_addr}")
+async def index_handler(request):
+    """Phục vụ trang dashboard chính."""
+    return web.FileResponse(os.path.join(os.path.dirname(__file__), 'static', 'index.html'))
 
-    # Lưu vết frame_id cuối cùng để tránh log trùng (Idempotency)
-    last_processed_frames = {} # device_id -> frame_id
+async def pi_ws_handler(request):
+    """
+    Xử lý kết nối WebSocket từ Raspberry Pi.
+    """
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    peername = request.transport.get_extra_info('peername')
+    client_addr = f"{peername[0]}:{peername[1]}" if peername else "unknown"
+    logger.info(f"[+] Pi connected from: {client_addr}")
 
     try:
-        async for message in websocket:
-            try:
-                data = json.loads(message)
-                device_id = data.get("device_id", "unknown_pi")
-                frame_id = data.get("frame_id", "N/A")
-                
-                # Hàm helper gửi ACK
-                async def send_ack(fid):
-                    resp = {"status": "success", "timestamp": time.time(), "ack_frame": fid}
-                    await websocket.send(json.dumps(resp))
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    # Validate schema and types
+                    required_fields = {
+                        "device_id": str,
+                        "frame_id": (int, str),
+                        "timestamp": (int, float),
+                        "label": str,
+                        "confidence": (int, float)
+                    }
+                    
+                    is_valid = True
+                    for field, expected_type in required_fields.items():
+                        val = data.get(field)
+                        if val is None or not isinstance(val, expected_type):
+                            logger.warning(f"[!] Payload from {client_addr} invalid field '{field}': expected {expected_type}, got {type(val)}")
+                            is_valid = False
+                            break
+                    
+                    if not is_valid:
+                        continue
 
-                # Kiểm tra trùng lặp (nếu là retry)
-                if last_processed_frames.get(device_id) == frame_id:
-                    await send_ack(frame_id) # ACK lại cho client yên tâm
-                    continue
-                
-                # Xử lý log
-                label = data.get("label", "unknown")
-                confidence = data.get("confidence", 0.0)
-                conveyor_status = data.get("conveyor_status", "N/A")
-                pi_time = data.get("timestamp", time.time())
-                latency = (time.time() - pi_time) * 1000
+                    device_id = data["device_id"]
+                    frame_id = data["frame_id"]
+                    
+                    # Hàm helper gửi ACK
+                    async def send_ack(fid):
+                        resp = {"status": "success", "timestamp": time.time(), "ack_frame": fid}
+                        await ws.send_str(json.dumps(resp))
 
-                logger.info(
-                    f"[{client_addr[0]}] Frame {frame_id}: "
-                    f"{label.upper()} ({confidence:.2%}) | "
-                    f"Conveyor: {conveyor_status} | Latency: {latency:.1f}ms"
-                )
+                    # Kiểm tra trùng lặp (Idempotency)
+                    if last_processed_frames.get(device_id) == frame_id:
+                        await send_ack(frame_id)
+                        continue
+                    
+                    # Log thông tin cơ bản ra terminal
+                    label = data.get("label", "unknown")
+                    confidence = data.get("confidence", 0.0)
+                    pi_time = data.get("timestamp", time.time())
+                    latency = (time.time() - pi_time) * 1000
 
-                # Gửi ACK SAU khi đã log xong (handshake hoàn tất)
-                last_processed_frames[device_id] = frame_id
-                await send_ack(frame_id)
+                    logger.info(
+                        f"[{client_addr}] Frame {frame_id}: "
+                        f"{label.upper()} ({confidence:.2%}) | Latency: {latency:.1f}ms"
+                    )
 
-            except json.JSONDecodeError:
-                logger.error(f"[!] Error: Received invalid JSON from {client_addr}")
-            except Exception as e:
-                logger.error(f"⚠️  Error processing message: {e}")
+                    # Lưu trạng thái xử lý
+                    last_processed_frames[device_id] = frame_id
+                    
+                    # Broadcast tới tất cả dashboard clients
+                    if dashboard_clients:
+                        broadcast_data = json.dumps(data)
+                        # Tạo danh sách các task gửi tin nhắn để chạy song song
+                        await asyncio.gather(
+                            *[client.send_str(broadcast_data) for client in dashboard_clients],
+                            return_exceptions=True
+                        )
 
-    except websockets.exceptions.ConnectionClosed:
-        logger.info(f"[-] Client {client_addr} disconnected.")
-    except Exception as e:
-        logger.error(f"💥 Server-side exception: {e}")
+                    # Gửi ACK về Pi
+                    await send_ack(frame_id)
 
+                except json.JSONDecodeError:
+                    logger.error(f"[!] Invalid JSON from {client_addr}")
+                except Exception as e:
+                    logger.error(f"⚠️ Error processing Pi message: {e}")
+            elif msg.type == web.WSMsgType.ERROR:
+                logger.error(f"WS connection closed with exception {ws.exception()}")
 
-async def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="PBL5 Fruit Classification Server")
+    finally:
+        logger.info(f"[-] Pi {client_addr} disconnected.")
+    
+    return ws
+
+async def dashboard_ws_handler(request):
+    """
+    Xử lý kết nối WebSocket từ Browser Dashboard.
+    """
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    logger.info("[+] Dashboard client connected.")
+    dashboard_clients.add(ws)
+
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                # Hiện tại dashboard không cần gửi gì lên server
+                pass
+            elif msg.type == web.WSMsgType.ERROR:
+                logger.error(f"Dashboard WS connection closed with exception {ws.exception()}")
+    finally:
+        dashboard_clients.remove(ws)
+        logger.info("[-] Dashboard client disconnected.")
+    
+    return ws
+
+async def init_app():
+    app = web.Application()
+    
+    # Routes
+    app.router.add_get('/', index_handler)
+    app.router.add_get('/ws/pi', pi_ws_handler)
+    app.router.add_get('/ws/dashboard', dashboard_ws_handler)
+    
+    # Static files
+    static_path = os.path.join(os.path.dirname(__file__), 'static')
+    app.router.add_static('/static/', static_path, name='static')
+    
+    return app
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="PBL5 Fruit Classification Web Server")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8765, help="Port to listen (default: 8765)")
     args = parser.parse_args()
 
-    async with websockets.serve(fruit_classification_handler, args.host, args.port):
-        logger.info("🚀 [SERVER] Multi-class Fruit Classification Server is running...")
-        logger.info(f"📍 Listening at ws://{args.host}:{args.port}")
-        await asyncio.Future()  # Chạy mãi mãi
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("\n🛑 Server stopped by user.")
+    app = asyncio.run(init_app())
+    logger.info(f"🚀 [SERVER] Dashboard is available at http://localhost:{args.port}")
+    logger.info(f"📍 WS Pi: ws://localhost:{args.port}/ws/pi")
+    logger.info(f"📍 WS Dashboard: ws://localhost:{args.port}/ws/dashboard")
+    
+    web.run_app(app, host=args.host, port=args.port, access_log=None)

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PBL5 - Fruit Classification Dashboard</title>
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+    <!-- Google Fonts: Inter & Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="main-header">
+            <div class="header-content">
+                <div class="logo-area">
+                    <span class="logo-icon">🍊</span>
+                    <h1>Fruit Classifier <span>Dashboard</span></h1>
+                </div>
+                <div class="status-indicator" id="connection-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">DISCONNECTED</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="dashboard-grid">
+            <!-- Left Column: Camera Feed -->
+            <section class="card camera-card">
+                <div class="card-header">
+                    <h2>📷 Live Camera Feed</h2>
+                    <span class="badge" id="device-id-badge">No Device</span>
+                </div>
+                <div class="camera-viewport">
+                    <img id="live-feed" src="https://via.placeholder.com/640x480?text=Waiting+for+Stream..." alt="Live Feed">
+                    <div class="viewport-overlay" id="no-feed-overlay">
+                        <div class="spinner"></div>
+                        <p>Đang chờ tín hiệu từ Raspberry Pi...</p>
+                    </div>
+                </div>
+                <div class="camera-footer">
+                    <div class="info-item">
+                        <span class="label">Resolution:</span>
+                        <span class="value">640 × 480</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="label">Status:</span>
+                        <span class="value status-active" id="conveyor-status">⏹ Stopped</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Column: Current Detection -->
+            <section class="card result-card">
+                <div class="card-header">
+                    <h2>🏷️ Kết quả nhận diện</h2>
+                </div>
+                <div class="result-display">
+                    <div class="fruit-icon-large" id="fruit-icon">❔</div>
+                    <div class="fruit-info">
+                        <h3 id="current-label">Waiting...</h3>
+                        <div class="confidence-container">
+                            <div class="confidence-bar-bg">
+                                <div class="confidence-bar-fill" id="confidence-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="confidence-value" id="confidence-text">0.0%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="meta-info-grid">
+                    <div class="meta-item">
+                        <span class="meta-label">Frame ID</span>
+                        <span class="meta-value" id="meta-frame-id">#0</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Latency</span>
+                        <span class="meta-value" id="meta-latency">0 ms</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Time</span>
+                        <span class="meta-value" id="meta-time">--:--:--</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Statistics Bar -->
+            <section class="stats-container">
+                <div class="stat-card">
+                    <span class="stat-icon">🍊</span>
+                    <div class="stat-details">
+                        <span class="stat-label">CAM</span>
+                        <span class="stat-count" id="count-cam">0</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-icon">🍋</span>
+                    <div class="stat-details">
+                        <span class="stat-label">CHANH</span>
+                        <span class="stat-count" id="count-chanh">0</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-icon">🟠</span>
+                    <div class="stat-details">
+                        <span class="stat-label">QUÝT</span>
+                        <span class="stat-count" id="count-quyt">0</span>
+                    </div>
+                </div>
+                <div class="stat-card total">
+                    <div class="stat-details">
+                        <span class="stat-label">TỔNG CỘNG</span>
+                        <span class="stat-count" id="count-total">0</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- History Table -->
+            <section class="card history-card">
+                <div class="card-header">
+                    <h2>📋 Lịch sử nhận diện</h2>
+                    <button class="btn-clear" id="btn-clear-history">Xóa lịch sử</button>
+                </div>
+                <div class="history-table-container">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th width="10%">#</th>
+                                <th width="20%">Thời gian</th>
+                                <th width="25%">Nhãn</th>
+                                <th width="25%">Độ tin cậy</th>
+                                <th width="20%">Ảnh</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body">
+                            <!-- Rows will be added here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <footer class="app-footer">
+            <p>&copy; 2026 PBL5 - Fruit Classification System - Developed for Industry 4.0</p>
+        </footer>
+    </div>
+
+    <!-- Modal for image preview -->
+    <div id="image-modal" class="modal">
+        <span class="modal-close">&times;</span>
+        <img class="modal-content" id="modal-img">
+        <div id="modal-caption"></div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

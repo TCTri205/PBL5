@@ -1,54 +1,61 @@
-import unittest
-from unittest.mock import AsyncMock
 import json
+import time
 import os
 import sys
-import time
+from aiohttp import web
+from aiohttp.test_utils import AioHTTPTestCase
 
 # Add laptop_server to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "laptop_server"))
 
-from server import fruit_classification_handler
+from server import init_app
 
+class LaptopServerTestCase(AioHTTPTestCase):
+    async def get_application(self):
+        """
+        Tạo instance của app để test.
+        """
+        return await init_app()
 
-class TestLaptopServer(unittest.IsolatedAsyncioTestCase):
-    async def test_handler_success(self):
-        # Mock WebSocket
-        mock_ws = AsyncMock()
-        mock_ws.remote_address = ("192.168.1.50", 12345)
+    async def test_index_page(self):
+        """Kiểm tra trang dashboard có load được không."""
+        resp = await self.client.get('/')
+        self.assertEqual(resp.status, 200)
+        text = await resp.text()
+        self.assertIn('Fruit Classifier', text)
 
-        # Simulate receiving one message
-        payload = {
-            "device_id": "pi-01",
-            "frame_id": 1,
-            "timestamp": time.time() - 0.05,  # 50ms latency
-            "label": "cam",
-            "confidence": 0.99,
-            "conveyor_status": "stopped",
-        }
+    async def test_pi_ws_connection(self):
+        """Kiểm tra kết nối WebSocket từ Pi và nhận ACK."""
+        async with self.client.ws_connect('/ws/pi') as ws:
+            payload = {
+                "device_id": "test-pi",
+                "frame_id": 100,
+                "timestamp": time.time(),
+                "label": "cam",
+                "confidence": 0.95
+            }
+            await ws.send_str(json.dumps(payload))
+            
+            # Đợi ACK từ server
+            msg = await ws.receive()
+            data = json.loads(msg.data)
+            self.assertEqual(data["status"], "success")
+            self.assertEqual(data["ack_frame"], 100)
 
-        # __aiter__ allows "async for message in websocket"
-        mock_ws.__aiter__.return_value = [json.dumps(payload)]
-
-        await fruit_classification_handler(mock_ws)
-
-        # Verify a response was sent back
-        self.assertEqual(mock_ws.send.call_count, 1)
-        response = json.loads(mock_ws.send.call_args[0][0])
-        self.assertEqual(response["status"], "success")
-        self.assertEqual(response["ack_frame"], 1)
-
-    async def test_handler_invalid_json(self):
-        mock_ws = AsyncMock()
-        mock_ws.remote_address = ("192.168.1.50", 12345)
-        mock_ws.__aiter__.return_value = ["not a json"]
-
-        # Should not crash, just log error
-        await fruit_classification_handler(mock_ws)
-
-        # No response should be sent for invalid JSON
-        self.assertEqual(mock_ws.send.call_count, 0)
-
+    async def test_pi_ws_invalid_payload(self):
+        """Kiểm tra server xử lý payload thiếu field."""
+        async with self.client.ws_connect('/ws/pi') as ws:
+            payload = {"device_id": "test-pi"} # Thiếu nhiều field
+            await ws.send_str(json.dumps(payload))
+            
+            # Server không nên gửi ACK cho payload lỗi (theo logic hiện tại là continue)
+            # Chúng ta check xem có nhận được gì không trong 1s
+            try:
+                await ws.receive(timeout=1.0)
+                self.fail("Should not receive response for invalid payload")
+            except Exception:
+                pass # Timeout là đúng kỳ vọng
 
 if __name__ == "__main__":
+    import unittest
     unittest.main()

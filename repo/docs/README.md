@@ -85,18 +85,19 @@ pip install -r requirements.txt
 python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_image.jpg
 ```
 
-#### 4. Khởi chạy WebSocket Server (trên Laptop)
+#### 4. Khởi chạy Web Server & Dashboard (trên Laptop)
 
 ```bash
 cd repo
 python start_server.py
-# Server lắng nghe tại cổng 8765
 ```
+- Dashboard sẽ khả dụng tại: `http://localhost:8765`
+- Giao diện cung cấp: Live feed, lịch sử nhận diện, và thống kê realtime.
 
 #### 5. Streaming Camera (trên Pi)
 
 ```bash
-# Tự động gửi kết quả qua WebSocket
+# Tự động gửi kết quả và ảnh qua WebSocket
 python start_pi.py --server <IP_LAPTOP>
 ```
 
@@ -152,5 +153,5 @@ python start_pi.py --server <IP_LAPTOP>
 
 ---
 
-*Tài liệu được cập nhật lần cuối: 2026-04-25*
+*Tài liệu được cập nhật lần cuối: 2026-05-05*
 *Ngôn ngữ chính: Tiếng Việt (ngoại trừ TECH_STACK.md)*

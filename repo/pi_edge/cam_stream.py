@@ -1,5 +1,6 @@
 import asyncio
 import json
+import base64
 import cv2
 import time
 import websockets
@@ -64,6 +65,13 @@ class CameraStreamer:
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
 
+    def _encode_frame(self, frame, quality=50):
+        """Encode OpenCV frame → base64 JPEG string để gửi qua WebSocket."""
+        if frame is None:
+            return None
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        return base64.b64encode(buffer).decode('utf-8')
+
     async def connect(self):
         """Duy trì kết nối WebSocket tới server."""
         try:
@@ -105,7 +113,7 @@ class CameraStreamer:
         # Tương thích cho websockets >= 14.0
         return self.websocket.state.name == "CLOSED"
 
-    async def send_result(self, label, confidence, frame_id):
+    async def send_result(self, label, confidence, frame_id, frame=None):
         """Gửi kết quả nhận diện sang laptop. Trả về True nếu thành công."""
         if self.is_ws_closed:
             logger.warning("⚠️ Cannot send: Websocket is closed.")
@@ -118,6 +126,7 @@ class CameraStreamer:
             "label": label,
             "confidence": float(confidence),
             "conveyor_status": "stopped",
+            "image": self._encode_frame(frame) if frame is not None else None,
         }
 
         try:
@@ -220,7 +229,7 @@ class CameraStreamer:
                 if label:
                     sent_success = False
                     for retry in range(3):
-                        if await self.send_result(label, confidence, frame_id):
+                        if await self.send_result(label, confidence, frame_id, frame=frame):
                             sent_success = True
                             break
                         logger.warning(f"🔄 Retry sending/ACK ({retry+1}/3)...")
@@ -332,10 +341,10 @@ async def main():
     else:
         MODEL = args.model
 
-    SERVER = f"ws://{args.server}:{args.port}"
+    SERVER = f"ws://{args.server}:{args.port}/ws/pi"
 
     if os.environ.get("TESTING"):
-        SERVER = "ws://127.0.0.1:8765"
+        SERVER = "ws://127.0.0.1:8765/ws/pi"
 
     if not os.path.exists(MODEL):
         logger.error(f"❌ Model file not found at {MODEL}")
