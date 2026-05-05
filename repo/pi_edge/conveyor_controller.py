@@ -48,28 +48,30 @@ import asyncio
 class ServoSorter:
     """Điều khiển servo phân loại trái cây (MG996R)."""
 
-    # Mapping: label -> (GPIO pin, delay)
+    # Mapping: label -> (GPIO pin, delay, active_angle)
     DEFAULT_CONFIG = {
-        "cam":   (5, 5.0),    # Servo 1: 5s
-        "chanh": (6, 8.0),    # Servo 2: 8s
-        "quyt":  (26, 11.0),  # Servo 3: 11s
+        "cam":   (5, 5.0, 40),    # Servo 1: 5s, gạt 40 độ
+        "chanh": (6, 8.0, 40),    # Servo 2: 8s, gạt 40 độ
+        "quyt":  (26, 11.0, 40),  # Servo 3: 11s, gạt 40 độ
     }
 
     def __init__(self, config=None):
         self.servos = {}
         self.delays = {}
+        self.active_angles = {}
         self._tasks = {} # Mapping label -> task
         conf = config or self.DEFAULT_CONFIG
-        for label, (pin, delay) in conf.items():
+        for label, (pin, delay, active_angle) in conf.items():
             try:
+                # Không set min_angle=0, max_angle=180 để dùng mặc định (-90 đến 90)
+                # Khi đó angle=0 sẽ tương ứng với pulse 1.5ms (vị trí giữa chuẩn của servo)
                 self.servos[label] = AngularServo(
                     pin,
-                    min_angle=0,
-                    max_angle=180,
                     min_pulse_width=0.0005,
                     max_pulse_width=0.0025,
                 )
                 self.delays[label] = delay
+                self.active_angles[label] = active_angle
                 self.servos[label].angle = 0
                 import time
                 time.sleep(0.2)  # Delay nhỏ để tránh sụt áp đồng loạt khi khởi tạo
@@ -85,14 +87,15 @@ class ServoSorter:
         """
         if label in self.servos:
             delay = self.delays.get(label, 5.0)
-            logger.info(f"🔧 Gạt Servo {label.upper()} (40°). Chờ {delay}s để thu về...")
+            active_angle = self.active_angles.get(label, 40)
+            logger.info(f"🔧 Gạt Servo {label.upper()} ({active_angle}°). Chờ {delay}s để thu về...")
             
             # Nếu đang có task reset cho label này, cancel nó để tránh xung đột
             if label in self._tasks:
                 self._tasks[label].cancel()
 
-            # Gạt 40 độ
-            self.servos[label].angle = 40
+            # Gạt theo góc đã cấu hình (40 hoặc -40)
+            self.servos[label].angle = active_angle
             
             # Chạy task thu về trong background
             task = asyncio.create_task(self._delayed_reset(label, delay))
