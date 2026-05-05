@@ -66,11 +66,11 @@ class ConveyorController:
         return self.sensor.is_active
 
     def start(self):
-        """Khởi động băng chuyền theo chiều thuận."""
+        """Khởi động băng chuyền (chiều ngược)."""
         self._running = True
-        self.motor_fwd.on()
-        self.motor_bwd.off()
-        logger.info("🔄 Băng chuyền CHẠY.")
+        self.motor_fwd.off()
+        self.motor_bwd.on()
+        logger.info("🔄 Băng chuyền CHẠY (chiều ngược).")
 
     def stop(self):
         """Dừng băng chuyền."""
