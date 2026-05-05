@@ -359,14 +359,26 @@ class CameraStreamer:
                     frame_id += 1
 
                 # 6. Kích hoạt servo gạt (nếu không phải unknown)
+                servo_task = None
                 if label and label != "unknown":
-                    await self.conveyor.sorter.activate(label)
+                    servo_task = await self.conveyor.sorter.activate(label)
 
-                # 7. Bật lại băng chuyền để đưa quả ra ngoài
+                # 7. Bật lại băng chuyền (chạy song song trong khi servo đang giữ)
                 self.conveyor.start()
-                await asyncio.sleep(self.resume_delay)
 
-                # 8. Đảm bảo cảm biến đã trống (quan trọng để không chụp lặp)
+                # 8. Đợi servo reset xong TRƯỚC KHI kiểm tra sensor
+                #    Nếu không đợi → quả/cánh tay servo vẫn nằm trong vùng sensor → Emergency Stop
+                if servo_task:
+                    try:
+                        await servo_task
+                    except asyncio.CancelledError:
+                        pass
+                    # Sau khi servo thu về, cho thêm thời gian để quả rời khỏi vùng sensor
+                    await asyncio.sleep(self.resume_delay)
+                else:
+                    await asyncio.sleep(self.resume_delay)
+
+                # 9. Đảm bảo cảm biến đã trống (quan trọng để không chụp lặp)
                 if not await self._wait_for_clear_safe():
                     logger.error("🛑 Emergency Stop: Sensor still blocked. Possible jam or sensor fault.")
                     self.conveyor.stop()

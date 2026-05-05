@@ -77,7 +77,12 @@ class ServoSorter:
                 logger.error(f"❌ Không thể khởi tạo servo cho {label} trên pin {pin}: {e}")
 
     async def activate(self, label: str):
-        """Kích hoạt servo gạt 40 độ và tự động thu về sau một khoảng thời gian."""
+        """
+        Kích hoạt servo gạt 40 độ và tự động thu về sau một khoảng thời gian.
+        
+        Returns:
+            asyncio.Task hoặc None — caller có thể await task để đợi servo reset xong.
+        """
         if label in self.servos:
             delay = self.delays.get(label, 5.0)
             logger.info(f"🔧 Gạt Servo {label.upper()} (40°). Chờ {delay}s để thu về...")
@@ -93,9 +98,11 @@ class ServoSorter:
             task = asyncio.create_task(self._delayed_reset(label, delay))
             self._tasks[label] = task
             task.add_done_callback(lambda t: self._tasks.pop(label, None) if self._tasks.get(label) == t else None)
+            return task
         else:
             if label != "unknown":
                 logger.warning(f"⚠️ Không tìm thấy servo cho label: {label}")
+            return None
 
     async def _delayed_reset(self, label: str, delay: float):
         """Chờ một thời gian rồi đưa servo về 0 độ."""
