@@ -54,6 +54,32 @@ def check_camera():
     logger.error("❌ No working camera found at indices 0, 1, or 2.")
     return False
 
+def check_servos():
+    logger.info("🔍 Checking servos (GPIO 5, 6, 26)...")
+    try:
+        from gpiozero import AngularServo
+        import time
+        pins = [5, 6, 26]
+        labels = ["Cam (5)", "Chanh (6)", "Quyt (26)"]
+        
+        for i, pin in enumerate(pins):
+            try:
+                s = AngularServo(pin, min_angle=0, max_angle=180, 
+                                min_pulse_width=0.0005, max_pulse_width=0.0025)
+                logger.info(f"Testing Servo {labels[i]} -> 40 degrees...")
+                s.angle = 40
+                time.sleep(0.5)
+                s.angle = 0
+                time.sleep(0.5)
+                s.close()
+                logger.info(f"✅ Servo {labels[i]} OK.")
+            except Exception as e:
+                logger.error(f"❌ Servo {labels[i]} failed: {e}")
+        return True
+    except ImportError:
+        logger.warning("⚠️ gpiozero not found, skipping servo hardware test.")
+        return False
+
 def check_power():
     """Kiểm tra nguồn điện (chỉ trên Raspberry Pi)."""
     if sys.platform == "linux":
@@ -76,14 +102,16 @@ def main():
     deps = check_dependencies()
     model = check_model()
     cam = check_camera()
+    servos = check_servos()
     check_power()
     
     print("\n--- Summary ---")
     print(f"Dependencies: {'OK' if deps else 'FAIL'}")
     print(f"Model File:   {'OK' if model else 'MISSING'}")
     print(f"Camera:       {'OK' if cam else 'NOT FOUND'}")
+    print(f"Servos (5,6,26): {'OK' if servos else 'SKIP/FAIL'}")
     
-    if deps and model and cam:
+    if deps and model and cam and servos:
         print("\n✨ Everything looks good! You are ready to run the streamer.")
     else:
         print("\n❌ Some checks failed. Please fix them before starting.")

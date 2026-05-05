@@ -32,7 +32,89 @@ except ImportError:
     else:
         logger.error("❌ gpiozero not found on Raspberry Pi! Hardware integration will not work.")
         raise
+
+try:
+    from gpiozero import AngularServo
+except ImportError:
+    if not is_raspberry_pi() or os.environ.get("TESTING") == "1":
+        class AngularServo:
+            def __init__(self, *args, **kwargs): self.angle = 0
+            def close(self): pass
+    else:
+        raise
+
 import asyncio
+
+class ServoSorter:
+    """Điều khiển servo phân loại trái cây (MG996R)."""
+
+    # Mapping: label -> (GPIO pin, delay)
+    DEFAULT_CONFIG = {
+        "cam":   (5, 5.0),    # Servo 1: 5s
+        "chanh": (6, 8.0),    # Servo 2: 8s
+        "quyt":  (26, 11.0),  # Servo 3: 11s
+    }
+
+    def __init__(self, config=None):
+        self.servos = {}
+        self.delays = {}
+        self._tasks = {} # Mapping label -> task
+        conf = config or self.DEFAULT_CONFIG
+        for label, (pin, delay) in conf.items():
+            try:
+                self.servos[label] = AngularServo(
+                    pin,
+                    min_angle=0,
+                    max_angle=180,
+                    min_pulse_width=0.0005,
+                    max_pulse_width=0.0025,
+                )
+                self.delays[label] = delay
+                self.servos[label].angle = 0
+            except Exception as e:
+                logger.error(f"❌ Không thể khởi tạo servo cho {label} trên pin {pin}: {e}")
+
+    async def activate(self, label: str):
+        """Kích hoạt servo gạt 40 độ và tự động thu về sau một khoảng thời gian."""
+        if label in self.servos:
+            delay = self.delays.get(label, 5.0)
+            logger.info(f"🔧 Gạt Servo {label.upper()} (40°). Chờ {delay}s để thu về...")
+            
+            # Nếu đang có task reset cho label này, cancel nó để tránh xung đột
+            if label in self._tasks:
+                self._tasks[label].cancel()
+
+            # Gạt 40 độ
+            self.servos[label].angle = 40
+            
+            # Chạy task thu về trong background
+            task = asyncio.create_task(self._delayed_reset(label, delay))
+            self._tasks[label] = task
+            task.add_done_callback(lambda t: self._tasks.pop(label, None) if self._tasks.get(label) == t else None)
+        else:
+            if label != "unknown":
+                logger.warning(f"⚠️ Không tìm thấy servo cho label: {label}")
+
+    async def _delayed_reset(self, label: str, delay: float):
+        """Chờ một thời gian rồi đưa servo về 0 độ."""
+        await asyncio.sleep(delay)
+        if label in self.servos:
+            logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
+            self.servos[label].angle = 0
+
+    def reset_all(self):
+        """Thu tất cả servo về vị trí nghỉ ngay lập tức."""
+        for s in self.servos.values():
+            s.angle = 0
+
+    def close(self):
+        """Giải phóng tài nguyên."""
+        # Cancel các task đang đợi reset nếu có
+        for task in self._tasks.values():
+            task.cancel()
+        for s in self.servos.values():
+            s.close()
+
 
 class ConveyorController:
     """
@@ -58,6 +140,7 @@ class ConveyorController:
             self.sensor = MockSensor()
 
         self._running = False
+        self.sorter = ServoSorter()
         logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}).")
 
     @property
@@ -85,6 +168,7 @@ class ConveyorController:
         self.sensor.close()
         self.motor_fwd.close()
         self.motor_bwd.close()
+        self.sorter.close()
         logger.info("🛑 ConveyorController đã giải phóng GPIO.")
 
     async def wait_for_object(self, timeout: float = 30.0) -> bool:
