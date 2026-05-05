@@ -17,21 +17,17 @@ def is_raspberry_pi():
         return False
 
 try:
-    from gpiozero import Motor, DigitalInputDevice
+    from gpiozero import DigitalOutputDevice
 except ImportError:
     # Cho phép mock fallback nếu:
     # 1. Không phải Raspberry Pi thật
     # 2. Hoặc đang trong chế độ TESTING
     if not is_raspberry_pi() or os.environ.get("TESTING") == "1":
         print("WARNING: gpiozero not found or not on RPi. Using Mock hardware classes.")
-        class Motor:
-            def __init__(self, **kwargs): pass
-            def forward(self, speed=1): pass
-            def backward(self, speed=1): pass
-            def stop(self): pass
-            def close(self): pass
-        class DigitalInputDevice:
+        class DigitalOutputDevice:
             def __init__(self, *args, **kwargs): self.is_active = False
+            def on(self): pass
+            def off(self): pass
             def close(self): pass
     else:
         logger.error("❌ gpiozero not found on Raspberry Pi! Hardware integration will not work.")
@@ -46,12 +42,20 @@ class ConveyorController:
 
     def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17):
         logger.info("⚙️ Khởi tạo ConveyorController...")
-        # Motor A: IN1=GPIO22 (forward), IN2=GPIO23 (backward)
-        # pwm=False: Disable PWM to ensure compatibility with all pin factories (Native, etc.)
-        self.motor = Motor(forward=motor_fwd_pin, backward=motor_bwd_pin, pwm=False)
+        # Sử dụng DigitalOutputDevice thay cho Motor để tránh lỗi PWM trên driver Native/LGPIO
+        self.motor_fwd = DigitalOutputDevice(motor_fwd_pin)
+        self.motor_bwd = DigitalOutputDevice(motor_bwd_pin)
 
         # pull_up=True: active-low (GPIO LOW = cảm biến kích hoạt = có vật cản)
-        self.sensor = DigitalInputDevice(sensor_pin, pull_up=True)
+        try:
+            from gpiozero import DigitalInputDevice
+            self.sensor = DigitalInputDevice(sensor_pin, pull_up=True)
+        except ImportError:
+            # Mock cho cảm biến nếu cần
+            class MockSensor:
+                def __init__(self): self.is_active = False
+                def close(self): pass
+            self.sensor = MockSensor()
 
         self._running = False
         logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}).")
@@ -59,26 +63,28 @@ class ConveyorController:
     @property
     def has_object(self) -> bool:
         """True nếu cảm biến phát hiện có vật cản."""
-        # pull_up=True: is_active=True khi GPIO bị kéo xuống LOW (có vật cản)
         return self.sensor.is_active
 
     def start(self):
         """Khởi động băng chuyền theo chiều thuận."""
         self._running = True
-        self.motor.forward()
+        self.motor_fwd.on()
+        self.motor_bwd.off()
         logger.info("🔄 Băng chuyền CHẠY.")
 
     def stop(self):
         """Dừng băng chuyền."""
-        self.motor.stop()
+        self.motor_fwd.off()
+        self.motor_bwd.off()
         logger.info("⏹️  Băng chuyền DỪNG.")
 
     def shutdown(self):
         """Giải phóng tài nguyên GPIO."""
         self._running = False
-        self.motor.stop()
+        self.stop()
         self.sensor.close()
-        self.motor.close()
+        self.motor_fwd.close()
+        self.motor_bwd.close()
         logger.info("🛑 ConveyorController đã giải phóng GPIO.")
 
     async def wait_for_object(self, timeout: float = 30.0) -> bool:
