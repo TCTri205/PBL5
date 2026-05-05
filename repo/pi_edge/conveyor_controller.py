@@ -212,13 +212,23 @@ class ConveyorController:
     async def wait_until_clear(self, timeout: float = 5.0) -> bool:
         """
         Chờ không đồng bộ cho đến khi vật thể đi qua hết vùng cảm biến.
-        Giúp tránh việc chụp lặp cùng một quả khi băng chuyền bắt đầu chạy lại.
+        Sử dụng debouncing (3 lần đọc liên tiếp sensor trống) để tránh false positive.
 
         Returns:
-            True nếu vùng cảm biến đã trống, False nếu timeout.
+            True nếu vùng cảm biến đã trống ổn định, False nếu timeout.
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        while self.sensor.is_active:
+        consecutive_clear = 0
+        required_clear = 3  # 3 lần đọc liên tiếp (~150ms) sensor trống mới xác nhận
+
+        while True:
+            if not self.sensor.is_active:
+                consecutive_clear += 1
+                if consecutive_clear >= required_clear:
+                    return True
+            else:
+                consecutive_clear = 0
+
             if asyncio.get_event_loop().time() > deadline:
                 return False
             await asyncio.sleep(0.05)

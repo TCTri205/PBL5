@@ -284,36 +284,38 @@ class CameraStreamer:
         loop = asyncio.get_running_loop()
         cam_fail_count = 0
 
+        # Băng chuyền chạy ngược → đưa quả về phía cảm biến
         self.conveyor.start()
         logger.info("⏳ Waiting for hardware stabilization (2s)...")
         await asyncio.sleep(2.0)
 
         try:
             while not self._stop_event.is_set():
-                # 1. Chờ cảm biến phát hiện trái cây
+                # ─── BƯỚC 1: Đảm bảo băng chuyền đang chạy ───
+                if not self.conveyor._running:
+                    self.conveyor.start()
+
+                # ─── BƯỚC 2: Chờ cảm biến phát hiện trái cây ───
                 logger.info("🔍 Waiting for object...")
                 if not await self.conveyor.wait_for_object(timeout=30.0):
                     logger.info("⏳ No object detected in 30s, continuing...")
                     continue
 
-                # 2. DỪNG băng chuyền để chụp ảnh ổn định
+                # ─── BƯỚC 3: DỪNG băng chuyền để chụp ảnh ổn định ───
                 self.conveyor.stop()
                 await asyncio.sleep(self.capture_delay)
 
-                # 3. Chụp ảnh (sử dụng timeout thread để tránh block 10s)
+                # ─── BƯỚC 4: Chụp ảnh ───
                 ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                 if not ret:
                     cam_fail_count += 1
                     logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/3). Attempting camera RE-INIT...")
-                    # Tạm dừng servo PWM để tránh nhiễu USB khi re-init camera
                     self._pause_servos()
                     self.cap.release()
                     await asyncio.sleep(1.0)
                     self.cap = self.init_camera(manual_idx=cam_idx)
-                    
                     if self.cap:
                         ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-                    # Kích hoạt lại servo sau khi camera đã sẵn sàng
                     self._resume_servos()
                     
                 if not ret:
@@ -323,7 +325,6 @@ class CameraStreamer:
                         raise FatalPipelineError("Camera lỗi liên tục 3 lần. Kiểm tra kết nối phần cứng.")
                     
                     logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
-                    # Vẫn cần chạy lại băng chuyền và đợi vật qua để tránh kẹt logic
                     self.conveyor.start()
                     await asyncio.sleep(self.resume_delay)
                     if not await self._wait_for_clear_safe():
@@ -332,10 +333,9 @@ class CameraStreamer:
                         raise FatalPipelineError("Camera lỗi liên tục và cảm biến kẹt.")
                     continue
                 
-                # Camera hoạt động tốt → reset bộ đếm lỗi
                 cam_fail_count = 0
 
-                # 4. Chạy inference trong ThreadPool
+                # ─── BƯỚC 5: Chạy inference (phân loại trái cây) ───
                 label, confidence = await loop.run_in_executor(
                     self.executor,
                     self.classifier.predict,
@@ -343,7 +343,7 @@ class CameraStreamer:
                     self.confidence_thresh,
                 )
 
-                # 5. Gửi kết quả (Bao gồm cả unknown để ghi nhận đủ mọi quả)
+                # ─── BƯỚC 6: Gửi kết quả lên server & chờ ACK ───
                 if label:
                     sent_success = False
                     for retry in range(3):
@@ -360,32 +360,34 @@ class CameraStreamer:
                     
                     frame_id += 1
 
-                # 6. Kích hoạt servo gạt (nếu không phải unknown)
+                # ─── BƯỚC 7: Kích hoạt servo gạt chắn nghiêng (deflector) ───
+                # Servo mở ra TRƯỚC → tạo chắn nghiêng trên băng chuyền
                 servo_task = None
                 if label and label != "unknown":
                     servo_task = await self.conveyor.sorter.activate(label)
 
-                # 7. Bật lại băng chuyền (chạy song song trong khi servo đang giữ)
+                # ─── BƯỚC 8: Chạy lại băng chuyền ───
+                # Quả di chuyển trên băng → gặp chắn nghiêng → trượt rớt vào rổ phân loại
                 self.conveyor.start()
 
-                # 8. Đợi servo reset xong TRƯỚC KHI kiểm tra sensor
-                #    Nếu không đợi → quả/cánh tay servo vẫn nằm trong vùng sensor → Emergency Stop
+                # ─── BƯỚC 9: Đợi quả rời khỏi vùng sensor ───
+                # Quả đang ở vị trí sensor, khi băng chạy quả sẽ di chuyển đi
+                await asyncio.sleep(self.resume_delay)
+
+                if not await self._wait_for_clear_safe():
+                    # Bypass đã xử lý bên trong _wait_for_clear_safe
+                    # Thêm cooldown để tránh chụp lại cùng quả nếu sensor bị lỗi
+                    logger.info("⏳ Cooldown after sensor bypass (3s)...")
+                    await asyncio.sleep(3.0)
+
+                # ─── BƯỚC 10: Đợi servo thu chắn nghiêng về (nếu chưa xong) ───
+                # Servo tự động thu về sau delay (5s/8s/11s tùy loại quả)
+                # Đợi để tránh quả tiếp theo bị chắn nhầm
                 if servo_task:
                     try:
                         await servo_task
                     except asyncio.CancelledError:
                         pass
-                    # Sau khi servo thu về, cho thêm thời gian để quả rời khỏi vùng sensor
-                    await asyncio.sleep(self.resume_delay)
-                else:
-                    await asyncio.sleep(self.resume_delay)
-
-                # 9. Đảm bảo cảm biến đã trống (quan trọng để không chụp lặp)
-                if not await self._wait_for_clear_safe():
-                    logger.error("🛑 Emergency Stop: Sensor still blocked. Possible jam or sensor fault.")
-                    self.conveyor.stop()
-                    self.conveyor.sorter.reset_all() # Reset servo trước khi dừng hẳn
-                    raise FatalPipelineError("Cảm biến bị kẹt hoặc lỗi vật lý.")
                 
                 # Kiểm tra nếu connection bị đóng giữa chừng
                 if self.is_ws_closed:
