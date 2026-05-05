@@ -42,7 +42,8 @@ class CameraStreamer:
         resolution=(640, 480),
         capture_delay=0.2,
         resume_delay=1.0,
-        wait_clear_timeout=5.0,
+        wait_clear_timeout=10.0,
+        sensor_bypass_timeout=20.0,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -62,6 +63,7 @@ class CameraStreamer:
         self.capture_delay = capture_delay
         self.resume_delay = resume_delay
         self.wait_clear_timeout = wait_clear_timeout
+        self.sensor_bypass_timeout = sensor_bypass_timeout
 
         # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
         # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
@@ -415,15 +417,42 @@ class CameraStreamer:
         logger.info("🛑 Pipeline stopped.")
 
     async def _wait_for_clear_safe(self, max_retries=3):
-        """Đợi sensor trống một cách an toàn, tránh chạy motor vô hạn."""
+        """
+        Đợi sensor trống một cách an toàn.
+        
+        - Thử tối đa max_retries lần, mỗi lần chờ wait_clear_timeout giây.
+        - Đảm bảo băng chuyền đang CHẠY trong suốt quá trình chờ.
+        - Nếu sensor vẫn kẹt sau sensor_bypass_timeout giây tổng cộng,
+          dùng thời gian cố định thay vì dừng khẩn cấp (bypass mode).
+        """
+        # Đảm bảo băng chuyền đang chạy để vật thể có thể di chuyển qua
+        if not self.conveyor._running:
+            logger.warning("⚠️ Conveyor not running during clear-wait — restarting.")
+            self.conveyor.start()
+
+        elapsed = 0.0
         retries = 0
         while not await self.conveyor.wait_until_clear(timeout=self.wait_clear_timeout):
             retries += 1
-            if retries >= max_retries:
-                return False
-            logger.warning(f"⚠️ Sensor still blocked ({retries}/{max_retries}). Still moving...")
+            elapsed += self.wait_clear_timeout
+
             if self._stop_event.is_set():
                 break
+
+            # Bypass mode: nếu đã chờ đủ lâu mà sensor vẫn kẹt,
+            # có thể sensor bị lỗi hoặc vật đã đi qua nhưng sensor không reset.
+            # Thay vì Emergency Stop, cho phép pipeline tiếp tục với cảnh báo.
+            if elapsed >= self.sensor_bypass_timeout:
+                logger.warning(
+                    f"⚠️ Sensor bypass: sensor vẫn kẹt sau {elapsed:.0f}s. "
+                    f"Tiếp tục pipeline (kiểm tra cảm biến vật lý)."
+                )
+                return True  # Bypass — không emergency stop
+
+            if retries >= max_retries:
+                return False
+
+            logger.warning(f"⚠️ Sensor still blocked ({retries}/{max_retries}). Still moving...")
             await asyncio.sleep(1.0)
         return True
 
@@ -456,7 +485,11 @@ async def main():
         "--resume-delay", type=float, default=1.0, help="Min time to move object out (s)"
     )
     parser.add_argument(
-        "--clear-timeout", type=float, default=5.0, help="Max time to wait for sensor clear (s)"
+        "--clear-timeout", type=float, default=10.0, help="Max time per retry to wait for sensor clear (s)"
+    )
+    parser.add_argument(
+        "--bypass-timeout", type=float, default=20.0,
+        help="Total time before sensor bypass (skip emergency stop if sensor stuck, default 20s)"
     )
 
     args = parser.parse_args()
@@ -492,6 +525,7 @@ async def main():
         capture_delay=args.capture_delay,
         resume_delay=args.resume_delay,
         wait_clear_timeout=args.clear_timeout,
+        sensor_bypass_timeout=args.bypass_timeout,
     )
 
     try:

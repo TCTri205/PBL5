@@ -169,6 +169,7 @@ class ConveyorController:
 
     def stop(self):
         """Dừng băng chuyền."""
+        self._running = False
         self.motor_fwd.off()
         self.motor_bwd.off()
         logger.info("⏹️  Băng chuyền DỪNG.")
