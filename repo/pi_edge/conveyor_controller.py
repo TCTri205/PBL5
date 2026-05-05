@@ -47,7 +47,8 @@ class ConveyorController:
     def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17):
         logger.info("⚙️ Khởi tạo ConveyorController...")
         # Motor A: IN1=GPIO22 (forward), IN2=GPIO23 (backward)
-        self.motor = Motor(forward=motor_fwd_pin, backward=motor_bwd_pin)
+        # pwm=False: Disable PWM to ensure compatibility with all pin factories (Native, etc.)
+        self.motor = Motor(forward=motor_fwd_pin, backward=motor_bwd_pin, pwm=False)
 
         # pull_up=True: active-low (GPIO LOW = cảm biến kích hoạt = có vật cản)
         self.sensor = DigitalInputDevice(sensor_pin, pull_up=True)

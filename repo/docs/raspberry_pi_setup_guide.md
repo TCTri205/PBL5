@@ -113,6 +113,14 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+### 4.5. Chuẩn bị Mô hình (Model)
+Để Pi có thể nhận diện trái cây, bạn cần copy file model đã huấn luyện từ Laptop/Colab sang Pi.
+- **Vị trí**: `~/pbl5_project/repo/pi_edge/model/best.onnx`
+- **Cách copy (từ máy tính)**:
+  ```bash
+  scp best.onnx pi@pbl5-pi.local:~/pbl5_project/repo/pi_edge/model/
+  ```
+
 ---
 
 ## 🛠️ 5. Tối ưu hóa: Tăng Swap Size (Chống tràn RAM)
@@ -154,7 +162,8 @@ sudo dphys-swapfile swapon
    [Service]
    User=pi
    WorkingDirectory=/home/pi/pbl5_project/repo
-   ExecStart=/home/pi/pbl5_project/repo/venv/bin/python /home/pi/pbl5_project/repo/start_pi.py --server 192.168.1.50 --device-id "Gate-01"
+   # Thay <IP_LAPTOP> bằng địa chỉ IP thật của máy chủ (VD: 192.168.1.15)
+   ExecStart=/home/pi/pbl5_project/repo/venv/bin/python /home/pi/pbl5_project/repo/start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
    ```
 
 2. **Cài đặt service vào hệ thống**:
@@ -172,13 +181,42 @@ sudo systemctl status pbl5_pi.service
 ```
 
 > [!TIP]
-> **Các lệnh quản lý dịch vụ nhanh:**
 > - **Chạy dịch vụ**: `sudo systemctl start pbl5_pi.service`
 > - **Dừng dịch vụ**: `sudo systemctl stop pbl5_pi.service`
 > - **Khởi động lại**: `sudo systemctl restart pbl5_pi.service`
 > - **Bật tự động khởi chạy**: `sudo systemctl enable pbl5_pi.service`
 > - **Tắt tự động khởi chạy**: `sudo systemctl disable pbl5_pi.service`
 > - **Xem log thực tế (để debug)**: `sudo journalctl -u pbl5_pi.service -f`
+
+---
+
+## 🚀 7. Quy trình vận hành (Thứ tự bắt buộc)
+Để hệ thống hoạt động ổn định và không bị lỗi kết nối, bạn **PHẢI** tuân thủ thứ tự sau:
+
+### Bước 1: Chuẩn bị trên Laptop (Server)
+1. Mở Terminal tại thư mục `repo`.
+2. Kích hoạt môi trường ảo: `.venv\Scripts\activate` (Windows).
+3. **Cài đặt thư viện (Chỉ cần làm lần đầu)**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. **Khởi chạy Server**:
+   ```bash
+   python start_server.py
+   ```
+5. Truy cập `http://localhost:8765` để mở Dashboard.
+
+### Bước 2: Chuẩn bị trên Raspberry Pi (Edge)
+1. Đảm bảo Pi đã cắm điện và kết nối cùng mạng WiFi với Laptop.
+2. Kiểm tra file cấu hình Service đã điền đúng IP của Laptop chưa.
+3. Chạy dịch vụ:
+   ```bash
+   sudo systemctl start pbl5_pi.service
+   ```
+
+### Bước 3: Giám sát
+- Nhìn vào màn hình Dashboard trên Laptop, nếu thấy khung hình Camera hiện lên và bắt đầu có dữ liệu nhảy là bạn đã thành công!
+- Nếu không thấy hình, dùng lệnh `sudo journalctl -u pbl5_pi.service -f` trên Pi để xem lỗi.
 
 ---
 
