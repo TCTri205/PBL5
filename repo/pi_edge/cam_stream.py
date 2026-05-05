@@ -3,12 +3,16 @@ import json
 import base64
 import cv2
 import time
+import threading
 import websockets
 import os
 import sys
 import logging
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+
+# Tắt log cảnh báo GPU/Discovery của ONNX Runtime (PHẢI đặt trước khi import onnxruntime)
+os.environ["ORT_LOGGING_LEVEL"] = "3"
 
 # Ensure fruit_classifier can be imported from the current directory
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -156,33 +160,101 @@ class CameraStreamer:
             logger.error(f"❌ Error sending result: {e}")
             return False
 
-    def init_camera(self, manual_idx=None):
-        """Thử mở camera. Nếu manual_idx được cung cấp, dùng nó trước."""
-        indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
+    # ─── Camera Initialization ────────────────────────────────────────
+
+    def _read_with_timeout(self, cap, timeout=5.0):
+        """
+        Đọc 1 frame từ camera với timeout sử dụng thread riêng.
+        Tránh block main thread khi V4L2 select() bị treo.
         
-        for idx in indices:
-            logger.info(f"Trying to open camera at index {idx}...")
-            # Ép sử dụng V4L2 backend để ổn định hơn trên Linux/Pi
-            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-                # Optimize for latency: Set buffer size to 1 if supported
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                # Tắt auto exposure nếu cần để tránh timeout khi thiếu sáng (tùy chọn)
-                # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3) 
-                # Warm up camera: Đọc bỏ qua vài frame đầu để auto-exposure ổn định
-                for _ in range(5): cap.read()
-                
-                logger.info(f"✅ Camera started at index {idx} (Backend: V4L2)")
-                return cap
+        Returns:
+            (ret, frame) - giống cv2.VideoCapture.read()
+        """
+        result = {'ret': False, 'frame': None, 'done': False}
+
+        def do_read():
+            result['ret'], result['frame'] = cap.read()
+            result['done'] = True
+
+        t = threading.Thread(target=do_read, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+
+        if not result['done']:
+            # cap.read() vẫn đang block → camera không trả dữ liệu
+            return False, None
+
+        return result['ret'], result['frame']
+
+    def _try_open_camera(self, idx, backend, use_mjpeg=False):
+        """
+        Thử mở camera với cấu hình cụ thể và XÁC NHẬN nó thực sự đọc được frame.
+        
+        Returns:
+            cv2.VideoCapture nếu thành công, None nếu thất bại.
+        """
+        fmt_name = "MJPEG" if use_mjpeg else "RAW"
+        backend_name = "V4L2" if backend == cv2.CAP_V4L2 else "AUTO"
+
+        cap = cv2.VideoCapture(idx, backend)
+        if not cap.isOpened():
             cap.release()
-            
+            return None
+
+        # Cấu hình format
+        if use_mjpeg:
+            fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # XÁC NHẬN: Đọc thử 1 frame với timeout 5s
+        logger.info(f"  ↳ Testing [{backend_name}+{fmt_name}] on /dev/video{idx}...")
+        ret, frame = self._read_with_timeout(cap, timeout=5.0)
+
+        if ret and frame is not None:
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logger.info(f"  ✅ Camera OK: index={idx}, {backend_name}+{fmt_name}, {actual_w}x{actual_h}")
+            return cap
+
+        logger.warning(f"  ❌ No frames from index={idx} [{backend_name}+{fmt_name}] (timeout 5s)")
+        cap.release()
+        return None
+
+    def init_camera(self, manual_idx=None):
+        """
+        Thử mở camera với nhiều chiến lược khác nhau.
+        
+        Thứ tự ưu tiên (từ ổn định nhất → fallback):
+          1. MJPEG + V4L2  (giảm bandwidth USB, ổn định nhất)
+          2. MJPEG + AUTO   (để OpenCV tự chọn backend)
+          3. RAW   + V4L2  (chất lượng cao hơn nhưng cần bandwidth lớn)
+          4. RAW   + AUTO   (fallback cuối cùng)
+        """
+        indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
+
+        strategies = [
+            (cv2.CAP_V4L2, True),   # V4L2 + MJPEG (ổn định nhất)
+            (cv2.CAP_ANY,  True),   # Auto + MJPEG
+            (cv2.CAP_V4L2, False),  # V4L2 + RAW
+            (cv2.CAP_ANY,  False),  # Auto + RAW (fallback)
+        ]
+
+        for idx in indices:
+            logger.info(f"🔍 Probing camera at index {idx}...")
+            for backend, use_mjpeg in strategies:
+                cap = self._try_open_camera(idx, backend, use_mjpeg)
+                if cap:
+                    return cap
+
         # Fallback to auto-discovery if manual index failed
         if manual_idx is not None:
             logger.warning(f"⚠️  Manual index {manual_idx} failed. Falling back to auto-discovery...")
             return self.init_camera(manual_idx=None)
-            
+
         return None
 
     async def run_pipeline(self, cam_idx=None):
@@ -191,10 +263,16 @@ class CameraStreamer:
 
         if not self.cap:
             logger.error("❌ Error: Could not open any camera index.")
-            return
+            logger.error("💡 Hãy kiểm tra:")
+            logger.error("   1. Camera có được cắm chắc không? (rút ra cắm lại)")
+            logger.error("   2. Thử: v4l2-ctl --list-devices")
+            logger.error("   3. Thử: libcamera-hello (nếu dùng Pi Camera)")
+            logger.error("   4. Kiểm tra nguồn: vcgencmd get_throttled")
+            raise FatalPipelineError("Không thể mở camera sau khi thử tất cả chiến lược.")
 
         frame_id = 0
         loop = asyncio.get_running_loop()
+        cam_fail_count = 0  # Đếm số lần camera fail liên tiếp
 
         self.conveyor.start()
         # Chờ camera và phần cứng ổn định (quan trọng để tránh sụt áp gây lỗi timeout)
@@ -213,19 +291,25 @@ class CameraStreamer:
                 self.conveyor.stop()
                 await asyncio.sleep(self.capture_delay)
 
-                # 3. Chụp ảnh
-                ret, frame = self.cap.read()
+                # 3. Chụp ảnh (sử dụng timeout thread để tránh block 10s)
+                ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                 if not ret:
-                    logger.warning("⚠️ Failed to grab frame. Attempting camera RE-INIT...")
-                    # Khi gặp select() timeout, giải phóng và mở lại thường hiệu quả hơn là chỉ grab()
+                    cam_fail_count += 1
+                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/3). Attempting camera RE-INIT...")
+                    # Khi gặp select() timeout, giải phóng và mở lại
                     self.cap.release()
                     await asyncio.sleep(1.0)
                     self.cap = self.init_camera(manual_idx=cam_idx)
                     
                     if self.cap:
-                        ret, frame = self.cap.read()
+                        ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                     
                 if not ret:
+                    if cam_fail_count >= 3:
+                        logger.error("🛑 Camera failed 3 times consecutively. Possible hardware issue.")
+                        self.conveyor.stop()
+                        raise FatalPipelineError("Camera lỗi liên tục 3 lần. Kiểm tra kết nối phần cứng.")
+                    
                     logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
                     # Vẫn cần chạy lại băng chuyền và đợi vật qua để tránh kẹt logic
                     self.conveyor.start()
@@ -235,6 +319,9 @@ class CameraStreamer:
                         self.conveyor.stop()
                         raise FatalPipelineError("Camera lỗi liên tục và cảm biến kẹt.")
                     continue
+                
+                # Camera hoạt động tốt → reset bộ đếm lỗi
+                cam_fail_count = 0
 
                 # 4. Chạy inference trong ThreadPool
                 label, confidence = await loop.run_in_executor(

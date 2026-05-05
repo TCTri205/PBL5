@@ -20,9 +20,6 @@ class FruitClassifier:
             class_names: Danh sách tên các lớp (mặc định là cam, chanh, quyt)
         """
         self.imgsz = imgsz
-        # Tắt log cảnh báo GPU/Discovery của ONNX Runtime trên Pi
-        os.environ["ORT_LOGGING_LEVEL"] = "3" 
-        
         # Prefer CPUExecutionProvider for Raspberry Pi for stability
         self.session = ort.InferenceSession(
             model_path, providers=["CPUExecutionProvider"]
