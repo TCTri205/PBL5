@@ -167,7 +167,8 @@ class CameraStreamer:
     def _read_with_timeout(self, cap, timeout=5.0):
         """
         Đọc 1 frame từ camera với timeout sử dụng thread riêng.
-        Tránh block main thread khi V4L2 select() bị treo.
+        CHỈ DÙNG cho pipeline reads (khi camera đã warm).
+        KHÔNG dùng cho init (vì camera cần 6-9s cho frame đầu).
         
         Returns:
             (ret, frame) - giống cv2.VideoCapture.read()
@@ -183,74 +184,53 @@ class CameraStreamer:
         t.join(timeout=timeout)
 
         if not result['done']:
-            # cap.read() vẫn đang block → camera không trả dữ liệu
             return False, None
 
         return result['ret'], result['frame']
 
-    def _try_open_camera(self, idx, backend, use_mjpeg=False):
-        """
-        Thử mở camera với cấu hình cụ thể và XÁC NHẬN nó thực sự đọc được frame.
-        
-        Returns:
-            cv2.VideoCapture nếu thành công, None nếu thất bại.
-        """
-        fmt_name = "MJPEG" if use_mjpeg else "RAW"
-        backend_name = "V4L2" if backend == cv2.CAP_V4L2 else "AUTO"
-
-        cap = cv2.VideoCapture(idx, backend)
-        if not cap.isOpened():
-            cap.release()
-            return None
-
-        # Cấu hình format
-        if use_mjpeg:
-            fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
-            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-        # Lưu ý: KHÔNG set BUFFERSIZE=1 — V4L2 mmap yêu cầu tối thiểu 2 buffers
-
-        # XÁC NHẬN: Đọc thử 1 frame với timeout 5s
-        logger.info(f"  ↳ Testing [{backend_name}+{fmt_name}] on /dev/video{idx}...")
-        ret, frame = self._read_with_timeout(cap, timeout=5.0)
-
-        if ret and frame is not None:
-            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            logger.info(f"  ✅ Camera OK: index={idx}, {backend_name}+{fmt_name}, {actual_w}x{actual_h}")
-            return cap
-
-        logger.warning(f"  ❌ No frames from index={idx} [{backend_name}+{fmt_name}] (timeout 5s)")
-        cap.release()
-        return None
-
     def init_camera(self, manual_idx=None):
         """
-        Thử mở camera với nhiều chiến lược khác nhau.
+        Mở camera DV20 USB với MJPEG format.
         
-        Thứ tự ưu tiên (từ ổn định nhất → fallback):
-          1. MJPEG + V4L2  (giảm bandwidth USB, ổn định nhất)
-          2. MJPEG + AUTO   (để OpenCV tự chọn backend)
-          3. RAW   + V4L2  (chất lượng cao hơn nhưng cần bandwidth lớn)
-          4. RAW   + AUTO   (fallback cuối cùng)
+        Sử dụng blocking cap.read() (KHÔNG dùng threading) để đợi frame đầu tiên,
+        vì camera Jieli Technology DV20 cần 6-9 giây để warm up và bắt đầu stream.
+        Đây là cùng phương pháp đã hoạt động trong manual test.
         """
         indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
 
-        strategies = [
-            (cv2.CAP_V4L2, True),   # V4L2 + MJPEG (ổn định nhất)
-            (cv2.CAP_ANY,  True),   # Auto + MJPEG
-            (cv2.CAP_V4L2, False),  # V4L2 + RAW
-            (cv2.CAP_ANY,  False),  # Auto + RAW (fallback)
-        ]
-
         for idx in indices:
-            logger.info(f"🔍 Probing camera at index {idx}...")
-            for backend, use_mjpeg in strategies:
-                cap = self._try_open_camera(idx, backend, use_mjpeg)
-                if cap:
-                    return cap
+            logger.info(f"🔍 Opening camera at index {idx}...")
+            
+            # Thử V4L2 backend trước (ổn định hơn trên Linux)
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                cap.release()
+                # Fallback: thử AUTO backend
+                cap = cv2.VideoCapture(idx)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+
+            # Ép MJPEG format — bắt buộc cho DV20 trên Pi USB
+            # (YUYV quá nặng bandwidth, gây select() timeout)
+            fourcc = cv2.VideoWriter_fourcc('M', 'J', 'P', 'G')
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+
+            # BLOCKING read — đợi frame đầu tiên (V4L2 timeout mặc định ~10s).
+            # Camera DV20 cần 6-9s warm up — KHÔNG dùng thread timeout ở đây.
+            logger.info(f"  ↳ Waiting for first frame (blocking, up to ~10s)...")
+            ret, frame = cap.read()  # ← Giống hệt manual test đã thành công
+
+            if ret and frame is not None:
+                actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                logger.info(f"  ✅ Camera OK: index={idx}, MJPEG, {actual_w}x{actual_h}")
+                return cap
+
+            logger.warning(f"  ❌ No frames from index={idx} (V4L2 timeout)")
+            cap.release()
 
         # Fallback to auto-discovery if manual index failed
         if manual_idx is not None:
