@@ -162,13 +162,19 @@ class CameraStreamer:
         
         for idx in indices:
             logger.info(f"Trying to open camera at index {idx}...")
-            cap = cv2.VideoCapture(idx)
+            # Ép sử dụng V4L2 backend để ổn định hơn trên Linux/Pi
+            cap = cv2.VideoCapture(idx, cv2.CAP_V4L2)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
                 # Optimize for latency: Set buffer size to 1 if supported
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                logger.info(f"✅ Camera started at index {idx}")
+                # Tắt auto exposure nếu cần để tránh timeout khi thiếu sáng (tùy chọn)
+                # cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3) 
+                # Warm up camera: Đọc bỏ qua vài frame đầu để auto-exposure ổn định
+                for _ in range(5): cap.read()
+                
+                logger.info(f"✅ Camera started at index {idx} (Backend: V4L2)")
                 return cap
             cap.release()
             
@@ -210,20 +216,24 @@ class CameraStreamer:
                 # 3. Chụp ảnh
                 ret, frame = self.cap.read()
                 if not ret:
-                    logger.warning("⚠️ Failed to grab frame. Clearing buffer and retrying...")
-                    # Thử giải phóng buffer nếu timeout nhẹ
-                    for _ in range(5): self.cap.grab() 
-                    ret, frame = self.cap.read()
+                    logger.warning("⚠️ Failed to grab frame. Attempting camera RE-INIT...")
+                    # Khi gặp select() timeout, giải phóng và mở lại thường hiệu quả hơn là chỉ grab()
+                    self.cap.release()
+                    await asyncio.sleep(1.0)
+                    self.cap = self.init_camera(manual_idx=cam_idx)
+                    
+                    if self.cap:
+                        ret, frame = self.cap.read()
                     
                 if not ret:
-                    logger.warning("⚠️ Still failed to grab frame. Resuming cycle to clear object...")
+                    logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
                     # Vẫn cần chạy lại băng chuyền và đợi vật qua để tránh kẹt logic
                     self.conveyor.start()
                     await asyncio.sleep(self.resume_delay)
                     if not await self._wait_for_clear_safe():
                         logger.error("🛑 Emergency Stop: Sensor blocked after camera fail.")
                         self.conveyor.stop()
-                        raise FatalPipelineError("Camera lỗi và cảm biến kẹt.")
+                        raise FatalPipelineError("Camera lỗi liên tục và cảm biến kẹt.")
                     continue
 
                 # 4. Chạy inference trong ThreadPool

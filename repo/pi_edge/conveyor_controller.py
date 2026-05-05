@@ -175,18 +175,28 @@ class ConveyorController:
 
     async def wait_for_object(self, timeout: float = 30.0) -> bool:
         """
-        Chờ không đồng bộ cho đến khi cảm biến phát hiện vật.
-        Tích hợp an toàn với asyncio event loop.
-
+        Chờ không đồng bộ cho đến khi cảm biến phát hiện vật (có debouncing).
+        
         Returns:
-            True nếu phát hiện vật, False nếu timeout.
+            True nếu phát hiện vật ổn định, False nếu timeout.
         """
         deadline = asyncio.get_event_loop().time() + timeout
-        while not self.sensor.is_active:
+        consecutive_hits = 0
+        required_hits = 2 # Yêu cầu 2 lần đọc liên tiếp (khoảng 100ms) để xác nhận
+
+        while True:
+            if self.sensor.is_active:
+                consecutive_hits += 1
+                if consecutive_hits >= required_hits:
+                    return True
+            else:
+                consecutive_hits = 0
+            
             if asyncio.get_event_loop().time() > deadline:
                 return False
-            await asyncio.sleep(0.05)  # Non-blocking check mỗi 50ms
-        return True
+                
+            await asyncio.sleep(0.05)
+        return False
 
     async def wait_until_clear(self, timeout: float = 5.0) -> bool:
         """
