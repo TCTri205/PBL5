@@ -63,8 +63,10 @@ class CameraStreamer:
         self.resume_delay = resume_delay
         self.wait_clear_timeout = wait_clear_timeout
 
-        # Khởi tạo phần cứng băng chuyền
-        self.conveyor = ConveyorController()
+        # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
+        # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
+        # ConveyorController sẽ được tạo trong run_pipeline() SAU KHI camera đã sẵn sàng.
+        self.conveyor = None
         
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
@@ -208,7 +210,7 @@ class CameraStreamer:
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Lưu ý: KHÔNG set BUFFERSIZE=1 — V4L2 mmap yêu cầu tối thiểu 2 buffers
 
         # XÁC NHẬN: Đọc thử 1 frame với timeout 5s
         logger.info(f"  ↳ Testing [{backend_name}+{fmt_name}] on /dev/video{idx}...")
@@ -257,8 +259,30 @@ class CameraStreamer:
 
         return None
 
+    def _pause_servos(self):
+        """Tạm dừng servo PWM để tránh nhiễu USB khi init camera."""
+        if self.conveyor and hasattr(self.conveyor, 'sorter'):
+            for label, servo in self.conveyor.sorter.servos.items():
+                try:
+                    servo.value = None  # Detach PWM signal
+                except Exception:
+                    pass
+            logger.info("⏸️  Servo PWM tạm dừng (tránh nhiễu USB).")
+
+    def _resume_servos(self):
+        """Kích hoạt lại servo PWM sau khi camera đã sẵn sàng."""
+        if self.conveyor and hasattr(self.conveyor, 'sorter'):
+            for label, servo in self.conveyor.sorter.servos.items():
+                try:
+                    servo.angle = 0  # Re-attach và đặt về vị trí nghỉ
+                except Exception:
+                    pass
+            logger.info("▶️  Servo PWM đã kích hoạt lại.")
+
     async def run_pipeline(self, cam_idx=None):
         """Vòng lặp: Chụp ảnh -> Phân loại (Async) -> Gửi kết quả."""
+        # QUAN TRỌNG: Init camera TRƯỚC conveyor.
+        # Servo software PWM gây nhiễu USB isochronous transfer → camera DV20 không stream.
         self.cap = self.init_camera(manual_idx=cam_idx)
 
         if not self.cap:
@@ -270,12 +294,15 @@ class CameraStreamer:
             logger.error("   4. Kiểm tra nguồn: vcgencmd get_throttled")
             raise FatalPipelineError("Không thể mở camera sau khi thử tất cả chiến lược.")
 
+        # Khởi tạo ConveyorController SAU KHI camera đã hoạt động
+        if self.conveyor is None:
+            self.conveyor = ConveyorController()
+
         frame_id = 0
         loop = asyncio.get_running_loop()
-        cam_fail_count = 0  # Đếm số lần camera fail liên tiếp
+        cam_fail_count = 0
 
         self.conveyor.start()
-        # Chờ camera và phần cứng ổn định (quan trọng để tránh sụt áp gây lỗi timeout)
         logger.info("⏳ Waiting for hardware stabilization (2s)...")
         await asyncio.sleep(2.0)
 
@@ -296,13 +323,16 @@ class CameraStreamer:
                 if not ret:
                     cam_fail_count += 1
                     logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/3). Attempting camera RE-INIT...")
-                    # Khi gặp select() timeout, giải phóng và mở lại
+                    # Tạm dừng servo PWM để tránh nhiễu USB khi re-init camera
+                    self._pause_servos()
                     self.cap.release()
                     await asyncio.sleep(1.0)
                     self.cap = self.init_camera(manual_idx=cam_idx)
                     
                     if self.cap:
                         ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+                    # Kích hoạt lại servo sau khi camera đã sẵn sàng
+                    self._resume_servos()
                     
                 if not ret:
                     if cam_fail_count >= 3:
@@ -495,7 +525,8 @@ async def main():
                 await asyncio.sleep(5)
     finally:
         # Đảm bảo giải phóng phần cứng khi tắt chương trình
-        streamer.conveyor.shutdown()
+        if streamer.conveyor:
+            streamer.conveyor.shutdown()
 
 
 if __name__ == "__main__":
