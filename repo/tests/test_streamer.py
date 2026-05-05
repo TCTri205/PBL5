@@ -14,11 +14,17 @@ from cam_stream import CameraStreamer
 
 
 class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
-    @patch("cam_stream.ConveyorController")
-    @patch("cam_stream.FruitClassifier")
-    def setUp(self, mock_classifier, mock_conveyor):
+    def setUp(self):
+        self.classifier_patcher = patch("cam_stream.FruitClassifier")
+        self.conveyor_patcher = patch("cam_stream.ConveyorController")
+        mock_classifier = self.classifier_patcher.start()
+        mock_conveyor = self.conveyor_patcher.start()
+        self.addCleanup(self.classifier_patcher.stop)
+        self.addCleanup(self.conveyor_patcher.stop)
+
         self.mock_classifier_instance = mock_classifier.return_value
         self.mock_conveyor_instance = mock_conveyor.return_value
+        self.mock_conveyor_instance.sorter.activate = AsyncMock(return_value=None)
         self.server_url = "ws://localhost:8765"
         self.streamer = CameraStreamer(
             model_path="dummy.onnx", server_url=self.server_url
@@ -84,7 +90,7 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         def read_side_effect():
             nonlocal frame_count
             frame_count += 1
-            if frame_count >= 2:
+            if frame_count >= 3:
                 self.streamer._stop_event.set()
             return (True, np.zeros((480, 640, 3), dtype=np.uint8))
         
@@ -138,6 +144,35 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
             
             # Đảm bảo motor đã được dừng cho an toàn
             self.mock_conveyor_instance.stop.assert_called()
+
+
+    async def test_wait_for_clear_safe_stops_on_stuck_sensor(self):
+        """Sensor kẹt không được bypass mặc định để tránh chụp lại cùng trạng thái."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.wait_clear_timeout = 1.0
+        self.streamer.sensor_bypass_timeout = 1.0
+        self.streamer.sensor_bypass_enabled = False
+        self.mock_conveyor_instance._running = True
+        self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=False)
+
+        cleared = await self.streamer._wait_for_clear_safe()
+
+        self.assertFalse(cleared)
+        self.mock_conveyor_instance.stop.assert_called()
+
+    async def test_wait_for_clear_safe_allows_explicit_bypass(self):
+        """Bypass chỉ được dùng khi bật cấu hình rõ ràng."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.wait_clear_timeout = 1.0
+        self.streamer.sensor_bypass_timeout = 1.0
+        self.streamer.sensor_bypass_enabled = True
+        self.mock_conveyor_instance._running = True
+        self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=False)
+
+        cleared = await self.streamer._wait_for_clear_safe()
+
+        self.assertTrue(cleared)
+        self.mock_conveyor_instance.stop.assert_not_called()
 
 
 if __name__ == "__main__":

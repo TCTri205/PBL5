@@ -134,8 +134,9 @@ class ConveyorController:
     Thiết kế để chạy song song với pipeline camera (asyncio-compatible).
     """
 
-    def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17):
+    def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17, sensor_active_low=True):
         logger.info("⚙️ Khởi tạo ConveyorController...")
+        self.sensor_active_low = sensor_active_low
         # Sử dụng DigitalOutputDevice thay cho Motor để tránh lỗi PWM trên driver Native/LGPIO
         self.motor_fwd = DigitalOutputDevice(motor_fwd_pin)
         self.motor_bwd = DigitalOutputDevice(motor_bwd_pin)
@@ -153,12 +154,18 @@ class ConveyorController:
 
         self._running = False
         self.sorter = ServoSorter()
-        logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}).")
+        sensor_logic = "active-low" if self.sensor_active_low else "active-high"
+        logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}, Logic={sensor_logic}).")
+
+    def _sensor_blocked(self) -> bool:
+        """Chuẩn hóa trạng thái sensor về True = có vật cản."""
+        raw_active = bool(self.sensor.is_active)
+        return raw_active if self.sensor_active_low else not raw_active
 
     @property
     def has_object(self) -> bool:
         """True nếu cảm biến phát hiện có vật cản."""
-        return self.sensor.is_active
+        return self._sensor_blocked()
 
     def start(self):
         """Khởi động băng chuyền (chiều ngược)."""
@@ -196,7 +203,7 @@ class ConveyorController:
         required_hits = 2 # Yêu cầu 2 lần đọc liên tiếp (khoảng 100ms) để xác nhận
 
         while True:
-            if self.sensor.is_active:
+            if self._sensor_blocked():
                 consecutive_hits += 1
                 if consecutive_hits >= required_hits:
                     return True
@@ -222,7 +229,7 @@ class ConveyorController:
         required_clear = 3  # 3 lần đọc liên tiếp (~150ms) sensor trống mới xác nhận
 
         while True:
-            if not self.sensor.is_active:
+            if not self._sensor_blocked():
                 consecutive_clear += 1
                 if consecutive_clear >= required_clear:
                     return True

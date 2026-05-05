@@ -44,6 +44,8 @@ class CameraStreamer:
         resume_delay=1.0,
         wait_clear_timeout=10.0,
         sensor_bypass_timeout=20.0,
+        sensor_active_low=True,
+        sensor_bypass_enabled=False,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -64,6 +66,8 @@ class CameraStreamer:
         self.resume_delay = resume_delay
         self.wait_clear_timeout = wait_clear_timeout
         self.sensor_bypass_timeout = sensor_bypass_timeout
+        self.sensor_active_low = sensor_active_low
+        self.sensor_bypass_enabled = sensor_bypass_enabled
 
         # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
         # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
@@ -278,7 +282,7 @@ class CameraStreamer:
 
         # Khởi tạo ConveyorController SAU KHI camera đã hoạt động
         if self.conveyor is None:
-            self.conveyor = ConveyorController()
+            self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
 
         frame_id = 0
         loop = asyncio.get_running_loop()
@@ -375,10 +379,9 @@ class CameraStreamer:
                 await asyncio.sleep(self.resume_delay)
 
                 if not await self._wait_for_clear_safe():
-                    # Bypass đã xử lý bên trong _wait_for_clear_safe
-                    # Thêm cooldown để tránh chụp lại cùng quả nếu sensor bị lỗi
-                    logger.info("⏳ Cooldown after sensor bypass (3s)...")
-                    await asyncio.sleep(3.0)
+                    logger.error("🛑 Emergency Stop: Sensor did not clear after sorting.")
+                    self.conveyor.stop()
+                    raise FatalPipelineError("Cảm biến vẫn bị che sau khi phân loại. Kiểm tra sensor GPIO 17 hoặc vật kẹt.")
 
                 # ─── BƯỚC 10: Đợi servo thu chắn nghiêng về (nếu chưa xong) ───
                 # Servo tự động thu về sau delay (5s/8s/11s tùy loại quả)
@@ -424,8 +427,8 @@ class CameraStreamer:
         
         - Thử tối đa max_retries lần, mỗi lần chờ wait_clear_timeout giây.
         - Đảm bảo băng chuyền đang CHẠY trong suốt quá trình chờ.
-        - Nếu sensor vẫn kẹt sau sensor_bypass_timeout giây tổng cộng,
-          dùng thời gian cố định thay vì dừng khẩn cấp (bypass mode).
+        - Mặc định dừng an toàn nếu sensor vẫn kẹt sau sensor_bypass_timeout giây.
+        - Chỉ tiếp tục khi bật sensor_bypass_enabled rõ ràng.
         """
         # Đảm bảo băng chuyền đang chạy để vật thể có thể di chuyển qua
         if not self.conveyor._running:
@@ -441,15 +444,20 @@ class CameraStreamer:
             if self._stop_event.is_set():
                 break
 
-            # Bypass mode: nếu đã chờ đủ lâu mà sensor vẫn kẹt,
-            # có thể sensor bị lỗi hoặc vật đã đi qua nhưng sensor không reset.
-            # Thay vì Emergency Stop, cho phép pipeline tiếp tục với cảnh báo.
             if elapsed >= self.sensor_bypass_timeout:
+                if self.sensor_bypass_enabled:
+                    logger.warning(
+                        f"⚠️ Sensor bypass: sensor vẫn kẹt sau {elapsed:.0f}s. "
+                        f"Tiếp tục pipeline theo cấu hình bypass."
+                    )
+                    return True
+
                 logger.warning(
-                    f"⚠️ Sensor bypass: sensor vẫn kẹt sau {elapsed:.0f}s. "
-                    f"Tiếp tục pipeline (kiểm tra cảm biến vật lý)."
+                    f"⚠️ Sensor vẫn kẹt sau {elapsed:.0f}s. Dừng an toàn; "
+                    f"kiểm tra sensor GPIO 17 hoặc vật kẹt trên băng chuyền."
                 )
-                return True  # Bypass — không emergency stop
+                self.conveyor.stop()
+                return False
 
             if retries >= max_retries:
                 return False
@@ -491,7 +499,22 @@ async def main():
     )
     parser.add_argument(
         "--bypass-timeout", type=float, default=20.0,
-        help="Total time before sensor bypass (skip emergency stop if sensor stuck, default 20s)"
+        help="Total time before safe stop when sensor is stuck (default 20s)"
+    )
+    parser.add_argument(
+        "--sensor-active-high",
+        action="store_true",
+        help="Use when the sensor reports blocked at GPIO HIGH instead of the default active-low wiring",
+    )
+    parser.add_argument(
+        "--enable-sensor-bypass",
+        action="store_true",
+        help="Allow pipeline to continue if the sensor stays blocked after --bypass-timeout",
+    )
+    parser.add_argument(
+        "--disable-sensor-bypass",
+        action="store_true",
+        help="Keep safe-stop behavior when sensor is stuck (default)",
     )
 
     args = parser.parse_args()
@@ -528,6 +551,8 @@ async def main():
         resume_delay=args.resume_delay,
         wait_clear_timeout=args.clear_timeout,
         sensor_bypass_timeout=args.bypass_timeout,
+        sensor_active_low=not args.sensor_active_high,
+        sensor_bypass_enabled=args.enable_sensor_bypass and not args.disable_sensor_bypass,
     )
 
     try:
