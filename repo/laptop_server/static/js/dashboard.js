@@ -34,12 +34,25 @@ document.addEventListener('DOMContentLoaded', () => {
     let stats = { cam: 0, chanh: 0, quyt: 0, total: 0 };
     let history = [];
     const MAX_HISTORY = 50;
+    const COMMAND_DEBOUNCE_MS = 300;
+    let lastCommandAt = 0;
 
     const fruitConfig = {
         'cam': { name: 'CAM (Orange)', icon: '🍊', color: '#f97316' },
         'chanh': { name: 'CHANH (Lemon)', icon: '🍋', color: '#eab308' },
         'quyt': { name: 'QUÝT (Mandarin)', icon: '🟠', color: '#fb923c' },
         'unknown': { name: 'Không xác định', icon: '❓', color: '#6b7280' }
+    };
+
+    const manualKeyMap = {
+        '1': 'cam',
+        '2': 'chanh',
+        '3': 'quyt',
+        '4': 'unknown',
+        'ArrowLeft': 'cam',
+        'ArrowDown': 'chanh',
+        'ArrowRight': 'quyt',
+        'ArrowUp': 'unknown'
     };
 
     // WebSocket Initialization
@@ -227,6 +240,28 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
     }
+
+    document.addEventListener('keydown', (event) => {
+        const label = manualKeyMap[event.key];
+        if (!label || event.repeat) return;
+        const tagName = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '';
+        if (tagName === 'input' || tagName === 'textarea' || event.target.isContentEditable) return;
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        if (['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'].includes(event.key)) {
+            event.preventDefault();
+        }
+
+        const now = Date.now();
+        if (now - lastCommandAt < COMMAND_DEBOUNCE_MS) return;
+        lastCommandAt = now;
+
+        socket.send(JSON.stringify({
+            type: 'manual_command',
+            command_id: `${now}-${Math.random().toString(36).slice(2, 10)}`,
+            label,
+            source_key: event.key
+        }));
+    });
 
     // Start
     connect();

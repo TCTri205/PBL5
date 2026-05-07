@@ -3,6 +3,7 @@ import os
 import sys
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "pi_edge"))
 
@@ -11,7 +12,9 @@ from conveyor_controller import ConveyorController
 
 class TestConveyorControllerSensorLogic(unittest.IsolatedAsyncioTestCase):
     def make_controller(self, sensor_active_low=True):
-        with patch("conveyor_controller.ServoSorter"):
+        with patch("conveyor_controller.ServoSorter"), \
+             patch("conveyor_controller.DigitalOutputDevice", side_effect=lambda *args, **kwargs: SimpleNamespace(is_active=False, on=lambda: None, off=lambda: None, close=lambda: None)), \
+             patch("gpiozero.DigitalInputDevice", side_effect=lambda *args, **kwargs: SimpleNamespace(is_active=False, close=lambda: None)):
             controller = ConveyorController(sensor_active_low=sensor_active_low)
         self.addCleanup(controller.shutdown)
         return controller

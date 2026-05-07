@@ -16,7 +16,30 @@ logger = logging.getLogger(__name__)
 
 # Quản lý các kết nối
 dashboard_clients = set()
+pi_clients = set()
 last_processed_frames = {}  # device_id -> frame_id
+
+VALID_MANUAL_LABELS = {"cam", "chanh", "quyt", "unknown"}
+VALID_MANUAL_KEYS = {
+    "1",
+    "2",
+    "3",
+    "4",
+    "ArrowLeft",
+    "ArrowDown",
+    "ArrowRight",
+    "ArrowUp",
+}
+
+
+def validate_manual_command(data):
+    return (
+        isinstance(data, dict)
+        and data.get("type") == "manual_command"
+        and isinstance(data.get("command_id"), str)
+        and data.get("label") in VALID_MANUAL_LABELS
+        and data.get("source_key") in VALID_MANUAL_KEYS
+    )
 
 async def index_handler(request):
     """Phục vụ trang dashboard chính."""
@@ -32,6 +55,7 @@ async def pi_ws_handler(request):
     peername = request.transport.get_extra_info('peername')
     client_addr = f"{peername[0]}:{peername[1]}" if peername else "unknown"
     logger.info(f"[+] Pi connected from: {client_addr}")
+    pi_clients.add(ws)
 
     try:
         async for msg in ws:
@@ -105,6 +129,7 @@ async def pi_ws_handler(request):
                 logger.error(f"WS connection closed with exception {ws.exception()}")
 
     finally:
+        pi_clients.discard(ws)
         logger.info(f"[-] Pi {client_addr} disconnected.")
     
     return ws
@@ -123,11 +148,38 @@ async def dashboard_ws_handler(request):
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 # Hiện tại dashboard không cần gửi gì lên server
-                pass
+                try:
+                    data = json.loads(msg.data)
+                except json.JSONDecodeError:
+                    logger.warning("[!] Invalid JSON from dashboard client")
+                    continue
+
+                if not validate_manual_command(data):
+                    logger.warning(f"[!] Invalid manual command from dashboard: {data}")
+                    continue
+
+                relay_payload = {
+                    "type": "manual_command",
+                    "command_id": data["command_id"],
+                    "label": data["label"],
+                    "source_key": data["source_key"],
+                    "timestamp": time.time(),
+                }
+
+                if pi_clients:
+                    relay_data = json.dumps(relay_payload)
+                    await asyncio.gather(
+                        *[
+                            client.send_str(relay_data)
+                            for client in pi_clients
+                            if not client.closed
+                        ],
+                        return_exceptions=True
+                    )
             elif msg.type == web.WSMsgType.ERROR:
                 logger.error(f"Dashboard WS connection closed with exception {ws.exception()}")
     finally:
-        dashboard_clients.remove(ws)
+        dashboard_clients.discard(ws)
         logger.info("[-] Dashboard client disconnected.")
     
     return ws

@@ -103,6 +103,13 @@ Lưu ý:
 - Luồng nhận kết quả từ Pi hiện tại trong `/ws/pi` vẫn giữ nguyên.
 - ACK cho result từ Pi vẫn giữ nguyên để không phá `send_result`.
 - Không yêu cầu ACK cho manual command từ Pi trong v1, vì dashboard không cần hiển thị trạng thái lệnh.
+- Trong `pi_ws_handler`, `finally` block cần xóa Pi client khỏi `pi_clients` để tránh relay command vào WebSocket đã đóng:
+  ```python
+  finally:
+      pi_clients.discard(ws)
+      logger.info(f"[-] Pi {client_addr} disconnected.")
+  ```
+- Trong `dashboard_ws_handler`, đổi `dashboard_clients.remove(ws)` (dòng server.py:130) thành `dashboard_clients.discard(ws)` để tránh `KeyError` khi client đã bị xóa trước đó. `discard()` an toàn hơn `remove()` vì không ném lỗi nếu phần tử không tồn tại trong set.
 
 ### 3.3 Raspberry Pi streamer
 
@@ -125,6 +132,11 @@ Trong `CameraStreamer.__init__`, thêm state:
 - `manual_run_duration: float`
 - `_manual_command_queue: asyncio.Queue`
 - `_manual_stop_task: asyncio.Task | None`
+- `_frame_id: int = 0`  # counter instance dùng chung cho cả auto và manual mode, tăng xuyên suốt vòng đời streamer để tránh trùng frame_id với server idempotency
+
+Lưu ý về model ONNX: Trong v1, `FruitClassifier` vẫn được load bình thường (dòng `self.classifier = FruitClassifier(model_path)`) ngay cả khi `--manual-control`, do `CameraStreamer.__init__` được gọi trước khi biết chế độ chạy. Điều này không ảnh hưởng chức năng — model chiếm RAM (~100-200MB) nhưng không được gọi inference. Có thể tối ưu sau bằng cách lazy-load classifier chỉ khi cần.
+
+**Quan trọng:** Trong `main()`, cần bỏ qua `os.path.exists(MODEL)` check khi `--manual-control`, vì check này (cam_stream.py:540-543) sẽ chặn `--manual-control` ngay từ đầu nếu file model không tồn tại. Sửa logic trong `main()`: nếu `args.manual_control`, bỏ qua check model và truyền `model_path=None` hoặc path giả vào `CameraStreamer`. Đồng thời, `CameraStreamer.__init__` cần lazy-load classifier: chỉ gọi `FruitClassifier(model_path)` nếu `model_path` không phải None.
 
 Điều chỉnh `_consume_messages()`:
 
@@ -138,7 +150,8 @@ Thêm hàm xử lý manual command:
 ```python
 async def _handle_manual_command(self, command):
     label = command["label"]
-    frame_id = ...
+    frame_id = self._frame_id  # dùng counter instance chung, tăng xuyên suốt vòng đời streamer
+    self._frame_id += 1
     confidence = self._fake_confidence(label)
 
     self.conveyor.start()
@@ -150,8 +163,13 @@ async def _handle_manual_command(self, command):
     if label != "unknown":
         await self.conveyor.sorter.activate(label)
 
-    await self.send_result(label, confidence, frame_id, frame=frame)
-    schedule auto-stop conveyor sau manual_run_duration
+    # Gửi result với conveyor_status="running" vì băng chuyền đang chạy thật sự
+    await self.send_result(label, confidence, frame_id, frame=frame, conveyor_status="running")
+
+    # Hủy timer auto-stop cũ nếu có, đặt timer mới
+    if self._manual_stop_task and not self._manual_stop_task.done():
+        self._manual_stop_task.cancel()
+    self._manual_stop_task = asyncio.create_task(self._auto_stop_conveyor())
 ```
 
 Chi tiết bắt buộc:
@@ -162,6 +180,8 @@ Chi tiết bắt buộc:
 - Nếu label là `unknown`, không gọi servo, chỉ chạy băng chuyền và gửi result.
 - Nếu command mới đến trong lúc băng chuyền đang chờ tự dừng, hủy timer cũ và đặt timer mới.
 - Nếu gửi result thất bại sau retry, log lỗi nhưng không nên `FatalPipelineError` ngay trong manual mode; demo mode nên tiếp tục nhận command mới, trừ lỗi camera/phần cứng nghiêm trọng.
+- **Cập nhật `send_result()`**: Thêm tham số `conveyor_status: str = "stopped"` vào signature. Mặc định `"stopped"` để giữ nguyên hành vi auto mode. Manual mode gọi với `conveyor_status="running"` vì băng chuyền đang chạy thật sự. Trong payload gửi đi (cam_stream.py:140), thay `"conveyor_status": "stopped"` bằng `"conveyor_status": conveyor_status`.
+- **Dùng chung `self._frame_id`**: Trong `run_pipeline()` (auto mode), đổi `frame_id = 0` local (cam_stream.py:287) thành dùng `self._frame_id` (khởi tạo = 0 trong `__init__`), tăng sau mỗi frame gửi thành công. Điều này đảm bảo frame_id tăng xuyên suốt vòng đời streamer, không reset về 0 khi reconnect, tránh trùng frame_id với server idempotency.
 
 Thêm vòng lặp manual:
 
@@ -175,9 +195,27 @@ async def run_manual_control(self, cam_idx=None):
         self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
 
     while not self._stop_event.is_set():
-        command = await self._manual_command_queue.get()
-        await self._handle_manual_command(command)
+        # Dùng asyncio.wait để tránh treo vĩnh viễn khi WebSocket mất kết nối.
+        # Nếu consumer task chết (do WebSocket đóng), queue.get() sẽ block mãi
+        # nếu không có timeout hoặc stop_event. Giải pháp: đợi song song queue.get()
+        # và stop_event, đồng thời kiểm tra is_ws_closed trước mỗi lần chờ.
+        if self.is_ws_closed:
+            logger.warning("WebSocket closed, breaking manual loop...")
+            break
+
+        try:
+            # Chờ command với timeout 1s để định kỳ kiểm tra is_ws_closed
+            command = await asyncio.wait_for(
+                self._manual_command_queue.get(), timeout=1.0
+            )
+            await self._handle_manual_command(command)
+        except asyncio.TimeoutError:
+            continue  # Không có command — kiểm tra lại điều kiện vòng lặp
 ```
+
+Lưu ý về chống treo:
+- `queue.get()` thuần túy sẽ block vĩnh viễn nếu consumer task (`_consume_messages`) kết thúc do WebSocket đóng. Cần dùng `asyncio.wait_for` với timeout ngắn (1s) và kiểm tra `is_ws_closed` mỗi vòng lặp.
+- Khi WebSocket đóng, `run_manual_control()` sẽ thoát → `main()` reconnect loop sẽ chạy lại `connect()` và `run_pipeline()` hoặc `run_manual_control()` như bình thường.
 
 Trong `main()`:
 
@@ -275,6 +313,7 @@ Thêm hoặc cập nhật `repo/tests/test_server.py`:
 - Dashboard gửi JSON lỗi, server không crash.
 - Dashboard gửi command khi không có Pi client, server không crash.
 - Luồng Pi gửi result và nhận ACK vẫn hoạt động như test hiện tại.
+- `dashboard_clients` sử dụng `discard()` thay vì `remove()` trong finally block.
 
 ### 6.2 Test streamer manual mode
 
@@ -283,18 +322,22 @@ Thêm hoặc cập nhật `repo/tests/test_streamer.py`:
 - Manual command `cam`:
   - `conveyor.start()` được gọi.
   - `sorter.activate("cam")` được gọi.
-  - `send_result("cam", ...)` được gọi.
+  - `send_result("cam", ..., conveyor_status="running")` được gọi.
   - Không gọi `classifier.predict`.
 - Manual command `chanh` và `quyt` tương tự.
 - Manual command `unknown`:
   - `conveyor.start()` được gọi.
   - Không gọi `sorter.activate`.
-  - `send_result("unknown", ...)` được gọi.
+  - `send_result("unknown", ..., conveyor_status="running")` được gọi.
 - Confidence giả nằm đúng khoảng:
   - Known labels: `0.82 <= confidence <= 0.98`.
   - Unknown: `0.35 <= confidence <= 0.55`.
 - Auto-stop conveyor sau `manual_run_duration`.
 - Command mới hủy timer stop cũ và gia hạn thời gian chạy.
+- `send_result()` nhận tham số `conveyor_status` với mặc định `"stopped"`.
+- `_frame_id` là counter instance dùng chung cho cả auto và manual mode, không reset về 0 khi reconnect.
+- Manual loop thoát an toàn khi WebSocket đóng (không treo vĩnh viễn).
+- Không yêu cầu file model ONNX tồn tại khi `--manual-control`.
 
 ### 6.3 Test dashboard JS
 

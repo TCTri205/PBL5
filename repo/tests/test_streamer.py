@@ -175,5 +175,33 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.mock_conveyor_instance.stop.assert_not_called()
 
 
+    async def test_manual_control_skips_model_load_and_queues_commands(self):
+        """Manual mode khĂ´ng phá»¥ thuá»™c classifier vĂ  nháº­n manual_command tá»« server."""
+        with patch("cam_stream.FruitClassifier") as mock_classifier:
+            streamer = CameraStreamer(
+                model_path=None,
+                server_url=self.server_url,
+                manual_control=True,
+            )
+            mock_classifier.assert_not_called()
+
+            mock_ws = AsyncMock()
+            mock_ws.closed = False
+            command = {
+                "type": "manual_command",
+                "command_id": "cmd-1",
+                "label": "cam",
+                "source_key": "1",
+            }
+            mock_ws.__aiter__.return_value = iter([json.dumps(command)])
+            streamer.websocket = mock_ws
+
+            await streamer._consume_messages()
+
+            queued = streamer._manual_command_queue.get_nowait()
+            self.assertEqual(queued["command_id"], "cmd-1")
+            self.assertEqual(queued["label"], "cam")
+
+
 if __name__ == "__main__":
     unittest.main()

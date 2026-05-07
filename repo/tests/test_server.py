@@ -56,6 +56,25 @@ class LaptopServerTestCase(AioHTTPTestCase):
             except Exception:
                 pass # Timeout là đúng kỳ vọng
 
+    async def test_manual_command_relay_to_pi(self):
+        """Kiá»ƒm tra dashboard manual command Ä‘Æ°á»£c relay xuá»‘ng Pi client."""
+        async with self.client.ws_connect('/ws/pi') as pi_ws, self.client.ws_connect('/ws/dashboard') as dashboard_ws:
+            payload = {
+                "type": "manual_command",
+                "command_id": "cmd-1",
+                "label": "cam",
+                "source_key": "1",
+            }
+            await dashboard_ws.send_str(json.dumps(payload))
+
+            msg = await pi_ws.receive(timeout=1.0)
+            data = json.loads(msg.data)
+            self.assertEqual(data["type"], "manual_command")
+            self.assertEqual(data["command_id"], "cmd-1")
+            self.assertEqual(data["label"], "cam")
+            self.assertEqual(data["source_key"], "1")
+            self.assertIn("timestamp", data)
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
