@@ -17,6 +17,9 @@ except ImportError:
 
 from conveyor_controller import ConveyorController
 
+# Second test comment to verify hook functionality
+# This should trigger the test runner again
+
 
 class TestConveyorControllerSensorLogic(unittest.IsolatedAsyncioTestCase):
     def make_controller(self, sensor_active_low=True):

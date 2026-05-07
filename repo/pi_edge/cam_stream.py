@@ -63,6 +63,9 @@ class CameraStreamer:
         sensor_bypass_enabled=False,
         manual_control=False,
         manual_run_duration=2.0,
+        jpeg_quality=50,
+        ack_timeout=1.5,
+        max_frame_retries=3,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -95,6 +98,9 @@ class CameraStreamer:
         self.sensor_bypass_enabled = sensor_bypass_enabled
         self.manual_control = manual_control
         self.manual_run_duration = manual_run_duration
+        self.jpeg_quality = jpeg_quality
+        self.ack_timeout = ack_timeout
+        self.max_frame_retries = max_frame_retries
         self._manual_command_queue = asyncio.Queue()
         self._manual_stop_task = None
         self._frame_id = 0
@@ -107,11 +113,11 @@ class CameraStreamer:
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
 
-    def _encode_frame(self, frame, quality=50):
+    def _encode_frame(self, frame):
         """Encode OpenCV frame → base64 JPEG string để gửi qua WebSocket."""
         if frame is None:
             return None
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         return base64.b64encode(buffer).decode('utf-8')
 
     async def connect(self):
@@ -190,7 +196,7 @@ class CameraStreamer:
                 logger.info(f"📤 Sent: {label.upper()} ({confidence:.1%})")
 
                 # 3. Đợi ACK từ server
-                await asyncio.wait_for(future, timeout=3.0)
+                await asyncio.wait_for(future, timeout=self.ack_timeout)
                 logger.info(f"✅ ACK received for frame {frame_id}")
                 return True
             except asyncio.TimeoutError:
@@ -324,15 +330,24 @@ class CameraStreamer:
 
         ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
         if not ret:
-            logger.warning("⚠️ Failed to grab manual frame. Attempting camera RE-INIT...")
-            self._pause_servos()
-            if self.cap:
-                self.cap.release()
-            await asyncio.sleep(1.0)
-            self.cap = self.init_camera()
-            if self.cap:
-                ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-            self._resume_servos()
+            logger.warning("⚠️ Failed to grab manual frame.")
+            # Thử nhanh lại 1-2 frame trước khi re-init camera
+            for quick_retry in range(2):
+                await asyncio.sleep(0.2)
+                ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
+                if ret:
+                    logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
+                    break
+            if not ret:
+                logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
+                self._pause_servos()
+                if self.cap:
+                    self.cap.release()
+                await asyncio.sleep(1.0)
+                self.cap = self.init_camera()
+                if self.cap:
+                    ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+                self._resume_servos()
 
         if not ret:
             self.conveyor.stop()
@@ -446,20 +461,30 @@ class CameraStreamer:
                 ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                 if not ret:
                     cam_fail_count += 1
-                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/3). Attempting camera RE-INIT...")
-                    self._pause_servos()
-                    self.cap.release()
-                    await asyncio.sleep(1.0)
-                    self.cap = self.init_camera(manual_idx=cam_idx)
-                    if self.cap:
-                        ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-                    self._resume_servos()
-                    
+                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/{self.max_frame_retries}).")
+                    # Thử nhanh lại 1-2 frame trước khi re-init camera
+                    for quick_retry in range(2):
+                        await asyncio.sleep(0.2)
+                        ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
+                        if ret:
+                            logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
+                            cam_fail_count = 0
+                            break
+                    if not ret:
+                        logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
+                        self._pause_servos()
+                        self.cap.release()
+                        await asyncio.sleep(1.0)
+                        self.cap = self.init_camera(manual_idx=cam_idx)
+                        if self.cap:
+                            ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+                        self._resume_servos()
+
                 if not ret:
-                    if cam_fail_count >= 3:
-                        logger.error("🛑 Camera failed 3 times consecutively. Possible hardware issue.")
+                    if cam_fail_count >= self.max_frame_retries:
+                        logger.error(f"🛑 Camera failed {self.max_frame_retries} times consecutively. Possible hardware issue.")
                         self.conveyor.stop()
-                        raise FatalPipelineError("Camera lỗi liên tục 3 lần. Kiểm tra kết nối phần cứng.")
+                        raise FatalPipelineError(f"Camera lỗi liên tục {self.max_frame_retries} lần. Kiểm tra kết nối phần cứng.")
                     
                     logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
                     self.conveyor.start()
@@ -663,6 +688,18 @@ async def main():
         action="store_true",
         help="Keep safe-stop behavior when sensor is stuck (default)",
     )
+    parser.add_argument(
+        "--jpeg-quality", type=int, default=50,
+        help="JPEG encoding quality for images sent to server (1-100, lower = faster but less detail)",
+    )
+    parser.add_argument(
+        "--ack-timeout", type=float, default=1.5,
+        help="Timeout in seconds waiting for ACK from server (lower = faster retries)",
+    )
+    parser.add_argument(
+        "--max-frame-retries", type=int, default=3,
+        help="Max consecutive frame capture failures before camera re-init",
+    )
 
     args = parser.parse_args()
 
@@ -702,6 +739,9 @@ async def main():
         sensor_bypass_enabled=args.enable_sensor_bypass and not args.disable_sensor_bypass,
         manual_control=args.manual_control,
         manual_run_duration=args.manual_run_duration,
+        jpeg_quality=args.jpeg_quality,
+        ack_timeout=args.ack_timeout,
+        max_frame_retries=args.max_frame_retries,
     )
 
     try:

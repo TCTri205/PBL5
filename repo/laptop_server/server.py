@@ -32,63 +32,6 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.addFilter(CorrelationIdFilter())
 
-# Quản lý các kết nối
-dashboard_clients = set()
-pi_clients = set()
-
-# Track last processed frames per device (idempotency), with LRU eviction
-from collections import OrderedDict
-class _FrameTracker:
-    """LRU cache for frame tracking to prevent unbounded memory growth."""
-    MAX_SIZE = 1000
-
-    def __init__(self, max_size=None):
-        self._data = OrderedDict()
-        self._max_size = max_size or self.MAX_SIZE
-
-    def __getitem__(self, key):
-        value = self._data[key]
-        self._data.move_to_end(key)
-        return value
-
-    def __setitem__(self, key, value):
-        if key in self._data:
-            self._data.move_to_end(key)
-        self._data[key] = value
-        while len(self._data) > self._max_size:
-            self._data.popitem(last=False)
-
-    def get(self, key, default=None):
-        return self._data.get(key, default)
-
-last_processed_frames = _FrameTracker()
-
-# Rate limiting for manual commands (trick mode protection)
-class RateLimiter:
-    """Simple sliding window rate limiter."""
-    def __init__(self, max_requests=5, window_size=1.0):
-        self.max_requests = max_requests
-        self.window_size = window_size  # in seconds
-        self.requests = defaultdict(deque)
-
-    def is_allowed(self, key):
-        now = time.time()
-        window_start = now - self.window_size
-
-        # Clean old requests
-        while self.requests[key] and self.requests[key][0] < window_start:
-            self.requests[key].popleft()
-
-        # Check if under limit
-        if len(self.requests[key]) >= self.max_requests:
-            return False
-
-        # Add current request
-        self.requests[key].append(now)
-        return True
-
-# Global rate limiter instance (5 commands per second per IP)
-manual_command_limiter = RateLimiter(max_requests=5, window_size=1.0)
 
 # Quản lý các kết nối
 dashboard_clients = set()
