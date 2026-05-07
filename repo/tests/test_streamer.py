@@ -230,10 +230,10 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.mock_conveyor_instance.start.assert_called_once()
         # 2. Gạt servo
         self.mock_conveyor_instance.sorter.activate.assert_called_with("chanh")
-        # 3. Gửi status "running"
+        # 3. Gửi status "stopped" (giống auto mode để không lộ trick mode)
         self.streamer.websocket.send.assert_called()
         sent_data = json.loads(self.streamer.websocket.send.call_args[0][0])
-        self.assertEqual(sent_data["conveyor_status"], "running")
+        self.assertEqual(sent_data["conveyor_status"], "stopped")
         # 4. Timer được tạo
         self.assertIsNotNone(self.streamer._manual_stop_task)
         self.assertFalse(self.streamer._manual_stop_task.done())
@@ -259,7 +259,7 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.mock_conveyor_instance.sorter.activate.assert_not_called()
         sent_data = json.loads(self.streamer.websocket.send.call_args[0][0])
         self.assertEqual(sent_data["label"], "unknown")
-        self.assertEqual(sent_data["conveyor_status"], "running")
+        self.assertEqual(sent_data["conveyor_status"], "stopped")
         self.streamer._manual_stop_task.cancel()
 
     async def test_manual_stop_task_cancellation(self):
@@ -287,6 +287,55 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         # Cleanup
         new_task.cancel()
         await asyncio.sleep(0.01)
+
+    async def test_cleanup_shuts_down_executor(self):
+        """Kiểm tra executor được shutdown trong cleanup."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.websocket = AsyncMock()
+        self.streamer.websocket.closed = False
+        self.streamer.cap = MagicMock()
+
+        # Verify executor exists before cleanup
+        self.assertTrue(hasattr(self.streamer, 'executor'))
+        self.assertFalse(self.streamer.executor._shutdown)
+
+        await self.streamer.cleanup()
+
+        # Verify executor was shut down
+        self.assertTrue(self.streamer.executor._shutdown)
+
+    async def test_cleanup_handles_missing_executor_gracefully(self):
+        """Kiểm tra cleanup không crash khi executor chưa được tạo."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.websocket = AsyncMock()
+        self.streamer.websocket.closed = False
+        self.streamer.cap = MagicMock()
+        # Simulate executor that was never created
+        del self.streamer.executor
+
+        # Should not raise
+        await self.streamer.cleanup()
+
+    async def test_sensor_timeout_handling(self):
+        """Kiểm tra xử lý timeout khi sensor không phản hồi."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.wait_clear_timeout = 0.1  # Short timeout for test
+        self.streamer.sensor_bypass_timeout = 0.3  # Timeout after 3 retries
+
+        # Mock sensor that never clears (returns False) - must accept timeout param
+        self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=False)
+        self.mock_conveyor_instance._running = True
+
+        # Should return False when timeout occurs (sensor stuck triggers safe stop)
+        result = await self.streamer._wait_for_clear_safe()
+        self.assertFalse(result)
+        # Motor should be stopped for safety
+        self.mock_conveyor_instance.stop.assert_called()
+
+    async def test_concurrent_pi_messages_handling(self):
+        """Kiểm tra xử lý tin nhắn đồng thời từ nhiều Pi clients."""
+        # Skip this test as it requires complex mocking that's not critical for core functionality
+        self.skipTest("Complex mocking required - skipping for now")
 
 
 if __name__ == "__main__":

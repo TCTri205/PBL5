@@ -4,20 +4,149 @@ import time
 import logging
 import argparse
 import os
+import numbers
+import uuid
 from aiohttp import web
+from collections import defaultdict, deque
+from contextvars import ContextVar
 
-# Cấu hình logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
-)
+# Context variable for correlation ID
+correlation_id_var = ContextVar('correlation_id', default=None)
+
+# Cấu hình logging với correlation ID từ context var
+class CorrelationIdFilter(logging.Filter):
+    def filter(self, record):
+        record.correlation_id = correlation_id_var.get() or 'NO_CORR_ID'
+        return True
+
+# Tạo logger riêng với correlation ID
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Handler để hiển thị log với correlation ID
+handler = logging.StreamHandler()
+formatter = logging.Formatter(
+    '%(asctime)s [%(levelname)s] [%(correlation_id)s] %(message)s'
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.addFilter(CorrelationIdFilter())
 
 # Quản lý các kết nối
 dashboard_clients = set()
 pi_clients = set()
-last_processed_frames = {}  # device_id -> frame_id
+
+# Track last processed frames per device (idempotency), with LRU eviction
+from collections import OrderedDict
+class _FrameTracker:
+    """LRU cache for frame tracking to prevent unbounded memory growth."""
+    MAX_SIZE = 1000
+
+    def __init__(self, max_size=None):
+        self._data = OrderedDict()
+        self._max_size = max_size or self.MAX_SIZE
+
+    def __getitem__(self, key):
+        value = self._data[key]
+        self._data.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        while len(self._data) > self._max_size:
+            self._data.popitem(last=False)
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+last_processed_frames = _FrameTracker()
+
+# Rate limiting for manual commands (trick mode protection)
+class RateLimiter:
+    """Simple sliding window rate limiter."""
+    def __init__(self, max_requests=5, window_size=1.0):
+        self.max_requests = max_requests
+        self.window_size = window_size  # in seconds
+        self.requests = defaultdict(deque)
+
+    def is_allowed(self, key):
+        now = time.time()
+        window_start = now - self.window_size
+
+        # Clean old requests
+        while self.requests[key] and self.requests[key][0] < window_start:
+            self.requests[key].popleft()
+
+        # Check if under limit
+        if len(self.requests[key]) >= self.max_requests:
+            return False
+
+        # Add current request
+        self.requests[key].append(now)
+        return True
+
+# Global rate limiter instance (5 commands per second per IP)
+manual_command_limiter = RateLimiter(max_requests=5, window_size=1.0)
+
+# Quản lý các kết nối
+dashboard_clients = set()
+pi_clients = set()
+
+# Track last processed frames per device (idempotency), with LRU eviction
+from collections import OrderedDict
+class _FrameTracker:
+    """LRU cache for frame tracking to prevent unbounded memory growth."""
+    MAX_SIZE = 1000
+
+    def __init__(self, max_size=None):
+        self._data = OrderedDict()
+        self._max_size = max_size or self.MAX_SIZE
+
+    def __getitem__(self, key):
+        value = self._data[key]
+        self._data.move_to_end(key)
+        return value
+
+    def __setitem__(self, key, value):
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        while len(self._data) > self._max_size:
+            self._data.popitem(last=False)
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+last_processed_frames = _FrameTracker()
+
+# Rate limiting for manual commands (trick mode protection)
+class RateLimiter:
+    """Simple sliding window rate limiter."""
+    def __init__(self, max_requests=5, window_size=1.0):
+        self.max_requests = max_requests
+        self.window_size = window_size  # in seconds
+        self.requests = defaultdict(deque)
+
+    def is_allowed(self, key):
+        now = time.time()
+        window_start = now - self.window_size
+
+        # Clean old requests
+        while self.requests[key] and self.requests[key][0] < window_start:
+            self.requests[key].popleft()
+
+        # Check if under limit
+        if len(self.requests[key]) >= self.max_requests:
+            return False
+
+        # Add current request
+        self.requests[key].append(now)
+        return True
+
+# Global rate limiter instance (5 commands per second per IP)
+manual_command_limiter = RateLimiter(max_requests=5, window_size=1.0)
 
 VALID_MANUAL_LABELS = {"cam", "chanh", "quyt", "unknown"}
 VALID_MANUAL_KEYS = {
@@ -43,148 +172,172 @@ def validate_manual_command(data):
 
 async def index_handler(request):
     """Phục vụ trang dashboard chính."""
-    return web.FileResponse(os.path.join(os.path.dirname(__file__), 'static', 'index.html'))
+    # Generate correlation ID for this request
+    correlation_id = str(uuid.uuid4())[:8]
+    token = correlation_id_var.set(correlation_id)
+    try:
+        return web.FileResponse(os.path.join(os.path.dirname(__file__), 'static', 'index.html'))
+    finally:
+        correlation_id_var.reset(token)
 
 async def pi_ws_handler(request):
     """
     Xử lý kết nối WebSocket từ Raspberry Pi.
     """
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    
-    peername = request.transport.get_extra_info('peername')
-    client_addr = f"{peername[0]}:{peername[1]}" if peername else "unknown"
-    logger.info(f"[+] Pi connected from: {client_addr}")
-    pi_clients.add(ws)
-
+    # Generate correlation ID for this connection
+    correlation_id = str(uuid.uuid4())[:8]
+    token = correlation_id_var.set(correlation_id)
     try:
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                try:
-                    data = json.loads(msg.data)
-                    # Validate schema and types
-                    required_fields = {
-                        "device_id": str,
-                        "frame_id": (int, str),
-                        "timestamp": (int, float),
-                        "label": str,
-                        "confidence": (int, float)
-                    }
-                    
-                    is_valid = True
-                    for field, expected_type in required_fields.items():
-                        val = data.get(field)
-                        if val is None or not isinstance(val, expected_type):
-                            logger.warning(f"[!] Payload from {client_addr} invalid field '{field}': expected {expected_type}, got {type(val)}")
-                            is_valid = False
-                            break
-                    
-                    if not is_valid:
-                        continue
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
 
-                    device_id = data["device_id"]
-                    frame_id = data["frame_id"]
-                    
-                    # Hàm helper gửi ACK
-                    async def send_ack(fid):
-                        resp = {"status": "success", "timestamp": time.time(), "ack_frame": fid}
-                        await ws.send_str(json.dumps(resp))
+        peername = request.transport.get_extra_info('peername')
+        client_addr = f"{peername[0]}:{peername[1]}" if peername else "unknown"
+        logger.info(f"[+] Pi connected from: {client_addr}")
+        pi_clients.add(ws)
 
-                    # Kiểm tra trùng lặp (Idempotency)
-                    if last_processed_frames.get(device_id) == frame_id:
-                        await send_ack(frame_id)
-                        continue
-                    
-                    # Log thông tin cơ bản ra terminal
-                    label = data.get("label", "unknown")
-                    confidence = data.get("confidence", 0.0)
-                    pi_time = data.get("timestamp", time.time())
-                    latency = (time.time() - pi_time) * 1000
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        # Validate schema and types
+                        required_fields = {
+                            "device_id": str,
+                            "frame_id": (int, str),
+                            "timestamp": (int, float),
+                            "label": str,
+                            "confidence": numbers.Real  # Accept int, float, np.float32, np.float64, etc.
+                        }
 
-                    logger.info(
-                        f"[{client_addr}] Frame {frame_id}: "
-                        f"{label.upper()} ({confidence:.2%}) | Latency: {latency:.1f}ms"
-                    )
+                        is_valid = True
+                        for field, expected_type in required_fields.items():
+                            val = data.get(field)
+                            if val is None or not isinstance(val, expected_type):
+                                logger.warning(f"[!] Payload from {client_addr} invalid field '{field}': expected {expected_type}, got {type(val)}")
+                                is_valid = False
+                                break
 
-                    # Lưu trạng thái xử lý
-                    last_processed_frames[device_id] = frame_id
-                    
-                    # Broadcast tới tất cả dashboard clients
-                    if dashboard_clients:
-                        broadcast_data = json.dumps(data)
-                        # Tạo danh sách các task gửi tin nhắn để chạy song song
-                        await asyncio.gather(
-                            *[client.send_str(broadcast_data) for client in dashboard_clients],
-                            return_exceptions=True
+                        if not is_valid:
+                            continue
+
+                        device_id = data["device_id"]
+                        frame_id = data["frame_id"]
+
+                        # Hàm helper gửi ACK
+                        async def send_ack(fid):
+                            resp = {"status": "success", "timestamp": time.time(), "ack_frame": fid}
+                            await ws.send_str(json.dumps(resp))
+
+                        # Kiểm tra trùng lặp (Idempotency)
+                        if last_processed_frames.get(device_id) == frame_id:
+                            await send_ack(frame_id)
+                            continue
+
+                        # Log thông tin cơ bản ra terminal
+                        label = data.get("label", "unknown")
+                        confidence = data.get("confidence", 0.0)
+                        pi_time = data.get("timestamp", time.time())
+                        latency = (time.time() - pi_time) * 1000
+
+                        logger.info(
+                            f"[{client_addr}] Frame {frame_id}: "
+                            f"{label.upper()} ({confidence:.2%}) | Latency: {latency:.1f}ms"
                         )
 
-                    # Gửi ACK về Pi
-                    await send_ack(frame_id)
+                        # Lưu trạng thái xử lý
+                        last_processed_frames[device_id] = frame_id
 
-                except json.JSONDecodeError:
-                    logger.error(f"[!] Invalid JSON from {client_addr}")
-                except Exception as e:
-                    logger.error(f"⚠️ Error processing Pi message: {e}")
-            elif msg.type == web.WSMsgType.ERROR:
-                logger.error(f"WS connection closed with exception {ws.exception()}")
+                        # Broadcast tới tất cả dashboard clients
+                        if dashboard_clients:
+                            broadcast_data = json.dumps(data)
+                            # Tạo danh sách các task gửi tin nhắn để chạy song song
+                            await asyncio.gather(
+                                *[client.send_str(broadcast_data) for client in dashboard_clients],
+                                return_exceptions=True
+                            )
 
+                        # Gửi ACK về Pi
+                        await send_ack(frame_id)
+
+                    except json.JSONDecodeError:
+                        logger.error(f"[!] Invalid JSON from {client_addr}")
+                    except Exception as e:
+                        logger.error(f"⚠️ Error processing Pi message: {e}")
+                elif msg.type == web.WSMsgType.ERROR:
+                    logger.error(f"WS connection closed with exception {ws.exception()}")
+
+        finally:
+            pi_clients.discard(ws)
+            logger.info(f"[-] Pi {client_addr} disconnected.")
+
+        return ws
     finally:
-        pi_clients.discard(ws)
-        logger.info(f"[-] Pi {client_addr} disconnected.")
-    
-    return ws
+        correlation_id_var.reset(token)
 
 async def dashboard_ws_handler(request):
     """
     Xử lý kết nối WebSocket từ Browser Dashboard.
     """
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    
-    logger.info("[+] Dashboard client connected.")
-    dashboard_clients.add(ws)
-
+    # Generate correlation ID for this connection
+    correlation_id = str(uuid.uuid4())[:8]
+    token = correlation_id_var.set(correlation_id)
     try:
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                # Hiện tại dashboard không cần gửi gì lên server
-                try:
-                    data = json.loads(msg.data)
-                except json.JSONDecodeError:
-                    logger.warning("[!] Invalid JSON from dashboard client")
-                    continue
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
 
-                if not validate_manual_command(data):
-                    logger.warning(f"[!] Invalid manual command from dashboard: {data}")
-                    continue
+        logger.info("[+] Dashboard client connected.")
+        dashboard_clients.add(ws)
 
-                relay_payload = {
-                    "type": "manual_command",
-                    "command_id": data["command_id"],
-                    "label": data["label"],
-                    "source_key": data["source_key"],
-                    "timestamp": time.time(),
-                }
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    # Hiện tại dashboard không cần gửi gì lên server
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        logger.warning("[!] Invalid JSON from dashboard client")
+                        continue
 
-                if pi_clients:
-                    relay_data = json.dumps(relay_payload)
-                    await asyncio.gather(
-                        *[
-                            client.send_str(relay_data)
-                            for client in pi_clients
-                            if not client.closed
-                        ],
-                        return_exceptions=True
-                    )
-                else:
-                    logger.warning(f"[!] No Pi clients connected - manual command dropped: {data['label']}")
-            elif msg.type == web.WSMsgType.ERROR:
-                logger.error(f"Dashboard WS connection closed with exception {ws.exception()}")
+                    if not validate_manual_command(data):
+                        logger.warning(f"[!] Invalid manual command from dashboard: {data}")
+                        continue
+
+                    # Rate limiting for manual commands (trick mode protection)
+                    client_ip = request.remote
+                    if not manual_command_limiter.is_allowed(client_ip):
+                        logger.warning(f"[!] Rate limit exceeded for manual command from {client_ip}")
+                        continue
+
+                    relay_payload = {
+                        "type": "manual_command",
+                        "command_id": data["command_id"],
+                        "label": data["label"],
+                        "source_key": data["source_key"],
+                        "timestamp": time.time(),
+                    }
+
+                    if pi_clients:
+                        relay_data = json.dumps(relay_payload)
+                        await asyncio.gather(
+                            *[
+                                client.send_str(relay_data)
+                                for client in pi_clients
+                                if not client.closed
+                            ],
+                            return_exceptions=True
+                        )
+                    else:
+                        logger.warning(f"[!] No Pi clients connected - manual command dropped: {data['label']}")
+                elif msg.type == web.WSMsgType.ERROR:
+                    logger.error(f"Dashboard WS connection closed with exception {ws.exception()}")
+        finally:
+            dashboard_clients.discard(ws)
+            logger.info("[-] Dashboard client disconnected.")
+
+        return ws
     finally:
-        dashboard_clients.discard(ws)
-        logger.info("[-] Dashboard client disconnected.")
-    
-    return ws
+        correlation_id_var.reset(token)
 
 async def init_app():
     app = web.Application()

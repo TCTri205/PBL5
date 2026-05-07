@@ -109,10 +109,13 @@ class ServoSorter:
 
     async def _delayed_reset(self, label: str, delay: float):
         """Chờ một thời gian rồi đưa servo về 0 độ."""
-        await asyncio.sleep(delay)
-        if label in self.servos:
-            logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
-            self.servos[label].angle = 0
+        try:
+            await asyncio.sleep(delay)
+            if label in self.servos and label in self._tasks:
+                logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
+                self.servos[label].angle = 0
+        except asyncio.CancelledError:
+            pass  # Graceful cancellation
 
     def reset_all(self):
         """Thu tất cả servo về vị trí nghỉ ngay lập tức."""
@@ -146,11 +149,18 @@ class ConveyorController:
             from gpiozero import DigitalInputDevice
             self.sensor = DigitalInputDevice(sensor_pin, pull_up=True)
         except ImportError:
-            # Mock cho cảm biến nếu cần
+            # Mock cho cảm biến nếu cần - cho phép inject state để test
             class MockSensor:
-                def __init__(self): self.is_active = False
+                def __init__(self, is_active_state=False):
+                    self._is_active = is_active_state
+                @property
+                def is_active(self):
+                    return self._is_active
+                @is_active.setter
+                def is_active(self, value):
+                    self._is_active = value
                 def close(self): pass
-            self.sensor = MockSensor()
+            self.sensor = MockSensor(is_active_state=False)
 
         self._running = False
         self.sorter = ServoSorter()

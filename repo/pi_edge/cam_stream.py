@@ -67,10 +67,14 @@ class CameraStreamer:
         """
         Inference + Streaming pipeline for Raspberry Pi.
         """
-        logger.info(f"🧠 Loading model from: {model_path}")
         if model_path is not None:
             logger.info(f"🧠 Loading model from: {model_path}")
-            self.classifier = FruitClassifier(model_path)
+            try:
+                self.classifier = FruitClassifier(model_path)
+            except FileNotFoundError:
+                raise FatalPipelineError(f"Model file not found at {model_path}")
+            except Exception as e:
+                raise FatalPipelineError(f"Failed to load model: {e}")
         else:
             self.classifier = None
         self.server_url = server_url
@@ -344,7 +348,7 @@ class CameraStreamer:
                 confidence,
                 frame_id,
                 frame=frame,
-                conveyor_status="running",
+                conveyor_status="stopped",
             ):
                 sent_success = True
                 break
@@ -536,18 +540,21 @@ class CameraStreamer:
             await self.cleanup()
 
     async def cleanup(self):
-        """Giải phóng tài nguyên (Camera, Websocket, Tasks)."""
+        """Giải phóng tài nguyên (Camera, Websocket, Tasks, Executor)."""
         if hasattr(self, '_consumer_task'):
             self._consumer_task.cancel()
-            
+
+        if hasattr(self, 'executor') and self.executor:
+            self.executor.shutdown(wait=False)
+
         if self.cap:
             self.cap.release()
             self.cap = None
-            
+
         if not self.is_ws_closed:
             await self.websocket.close()
             logger.info("🔌 Websocket connection closed.")
-            
+
         logger.info("🛑 Pipeline stopped.")
 
     async def _wait_for_clear_safe(self, max_retries=3):
