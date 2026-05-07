@@ -7,14 +7,28 @@ from types import SimpleNamespace
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "pi_edge"))
 
+try:
+    import gpiozero
+except ImportError:
+    # Mock gpiozero for non-RPi environments
+    from unittest.mock import MagicMock
+    gpiozero = MagicMock()
+    sys.modules["gpiozero"] = gpiozero
+
 from conveyor_controller import ConveyorController
 
 
 class TestConveyorControllerSensorLogic(unittest.IsolatedAsyncioTestCase):
     def make_controller(self, sensor_active_low=True):
+        # We patch where they are IMPORTED or used in conveyor_controller
         with patch("conveyor_controller.ServoSorter"), \
-             patch("conveyor_controller.DigitalOutputDevice", side_effect=lambda *args, **kwargs: SimpleNamespace(is_active=False, on=lambda: None, off=lambda: None, close=lambda: None)), \
-             patch("gpiozero.DigitalInputDevice", side_effect=lambda *args, **kwargs: SimpleNamespace(is_active=False, close=lambda: None)):
+             patch("conveyor_controller.DigitalOutputDevice") as mock_out, \
+             patch("gpiozero.DigitalInputDevice") as mock_in:
+            
+            # Setup mock behavior
+            mock_out.side_effect = lambda *a, **k: SimpleNamespace(is_active=False, on=lambda: None, off=lambda: None, close=lambda: None)
+            mock_in.side_effect = lambda *a, **k: SimpleNamespace(is_active=False, close=lambda: None)
+            
             controller = ConveyorController(sensor_active_low=sensor_active_low)
         self.addCleanup(controller.shutdown)
         return controller

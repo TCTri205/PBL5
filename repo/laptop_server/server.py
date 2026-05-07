@@ -176,6 +176,8 @@ async def dashboard_ws_handler(request):
                         ],
                         return_exceptions=True
                     )
+                else:
+                    logger.warning(f"[!] No Pi clients connected - manual command dropped: {data['label']}")
             elif msg.type == web.WSMsgType.ERROR:
                 logger.error(f"Dashboard WS connection closed with exception {ws.exception()}")
     finally:

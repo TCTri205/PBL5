@@ -20,6 +20,18 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fruit_classifier import FruitClassifier
 from conveyor_controller import ConveyorController
 
+# Import constants from server if possible, or define locally for Pi
+VALID_MANUAL_KEYS = {
+    "1",
+    "2",
+    "3",
+    "4",
+    "ArrowLeft",
+    "ArrowDown",
+    "ArrowRight",
+    "ArrowUp",
+}
+
 # Cấu hình logging
 logging.basicConfig(
     level=logging.INFO,
@@ -128,7 +140,7 @@ class CameraStreamer:
                         if self.manual_control and label in VALID_MANUAL_LABELS:
                             await self._manual_command_queue.put(data)
                         else:
-                            logger.warning(f"â ï¸ Ignoring invalid manual command: {data}")
+                            logger.warning(f"⚠️ Ignoring invalid manual command: {data}")
                 except Exception as e:
                     logger.warning(f"⚠️ Error parsing server message: {e}")
         except Exception:
@@ -308,7 +320,7 @@ class CameraStreamer:
 
         ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
         if not ret:
-            logger.warning("â ï¸ Failed to grab manual frame. Attempting camera RE-INIT...")
+            logger.warning("⚠️ Failed to grab manual frame. Attempting camera RE-INIT...")
             self._pause_servos()
             if self.cap:
                 self.cap.release()
@@ -320,7 +332,7 @@ class CameraStreamer:
 
         if not ret:
             self.conveyor.stop()
-            raise FatalPipelineError("Camera lá»—i khi cháº¡y manual control.")
+            raise FatalPipelineError("Camera lỗi khi chạy manual control.")
 
         if label != "unknown":
             await self.conveyor.sorter.activate(label)
@@ -336,11 +348,11 @@ class CameraStreamer:
             ):
                 sent_success = True
                 break
-            logger.warning(f"đŸ”„ Retry sending manual result ({retry+1}/3)...")
+            logger.warning(f"🔄 Retry sending manual result ({retry+1}/3)...")
             await asyncio.sleep(1)
 
         if not sent_success:
-            logger.error("âŒ Manual result was not ACKed after retries.")
+            logger.error("❌ Manual result was not ACKed after retries.")
 
         if self._manual_stop_task and not self._manual_stop_task.done():
             self._manual_stop_task.cancel()
@@ -349,8 +361,8 @@ class CameraStreamer:
     async def run_manual_control(self, cam_idx=None):
         self.cap = self.init_camera(manual_idx=cam_idx)
         if not self.cap:
-            logger.error("âŒ Error: Could not open any camera index.")
-            raise FatalPipelineError("KhĂ´ng thá»ƒ má»Ÿ camera cho manual control.")
+            logger.error("❌ Error: Could not open any camera index.")
+            raise FatalPipelineError("Không thể mở camera cho manual control.")
 
         if self.conveyor is None:
             self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
@@ -358,7 +370,7 @@ class CameraStreamer:
         try:
             while not self._stop_event.is_set():
                 if self.is_ws_closed:
-                    logger.warning("â ï¸ Websocket connection lost. Breaking manual loop...")
+                    logger.warning("⚠️ Websocket connection lost. Breaking manual loop...")
                     break
 
                 try:
@@ -372,7 +384,7 @@ class CameraStreamer:
         except FatalPipelineError:
             raise
         except Exception as e:
-            logger.error(f"đŸ”¥ Manual control error: {e}")
+            logger.error(f"💥 Manual control error: {e}")
         finally:
             if self._manual_stop_task and not self._manual_stop_task.done():
                 self._manual_stop_task.cancel()

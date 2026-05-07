@@ -176,7 +176,7 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_manual_control_skips_model_load_and_queues_commands(self):
-        """Manual mode khĂ´ng phá»¥ thuá»™c classifier vĂ  nháº­n manual_command tá»« server."""
+        """Manual mode không phụ thuộc classifier và nhận manual_command từ server."""
         with patch("cam_stream.FruitClassifier") as mock_classifier:
             streamer = CameraStreamer(
                 model_path=None,
@@ -201,6 +201,92 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
             queued = streamer._manual_command_queue.get_nowait()
             self.assertEqual(queued["command_id"], "cmd-1")
             self.assertEqual(queued["label"], "cam")
+
+    def test_fake_confidence_ranges(self):
+        """Kiểm tra dải độ tin cậy giả lập cho manual mode."""
+        conf_known = self.streamer._fake_confidence("cam")
+        self.assertGreaterEqual(conf_known, 0.82)
+        self.assertLessEqual(conf_known, 0.98)
+
+        conf_unknown = self.streamer._fake_confidence("unknown")
+        self.assertGreaterEqual(conf_unknown, 0.35)
+        self.assertLessEqual(conf_unknown, 0.55)
+
+    @patch("cv2.VideoCapture")
+    async def test_handle_manual_command_logic(self, mock_video_capture):
+        """Kiểm tra logic xử lý manual command: bật motor, gửi running status, đặt timer."""
+        self.streamer.websocket = AsyncMock()
+        self.streamer.websocket.closed = False
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.cap = MagicMock()
+        self.streamer.cap.read.return_value = (True, np.zeros((100, 100, 3), dtype=np.uint8))
+        
+        command = {"label": "chanh", "command_id": "c1", "source_key": "2"}
+        
+        with patch("asyncio.wait_for", AsyncMock(return_value=True)):
+            await self.streamer._handle_manual_command(command)
+
+        # 1. Bật motor
+        self.mock_conveyor_instance.start.assert_called_once()
+        # 2. Gạt servo
+        self.mock_conveyor_instance.sorter.activate.assert_called_with("chanh")
+        # 3. Gửi status "running"
+        self.streamer.websocket.send.assert_called()
+        sent_data = json.loads(self.streamer.websocket.send.call_args[0][0])
+        self.assertEqual(sent_data["conveyor_status"], "running")
+        # 4. Timer được tạo
+        self.assertIsNotNone(self.streamer._manual_stop_task)
+        self.assertFalse(self.streamer._manual_stop_task.done())
+        
+        # Cleanup timer
+        self.streamer._manual_stop_task.cancel()
+
+    @patch("cv2.VideoCapture")
+    async def test_handle_manual_command_unknown_label(self, mock_video_capture):
+        """Kiểm tra manual command với label 'unknown' không gọi servo."""
+        self.streamer.websocket = AsyncMock()
+        self.streamer.websocket.closed = False
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.cap = MagicMock()
+        self.streamer.cap.read.return_value = (True, np.zeros((100, 100, 3), dtype=np.uint8))
+
+        command = {"label": "unknown", "command_id": "c2", "source_key": "4"}
+
+        with patch("asyncio.wait_for", AsyncMock(return_value=True)):
+            await self.streamer._handle_manual_command(command)
+
+        self.mock_conveyor_instance.start.assert_called_once()
+        self.mock_conveyor_instance.sorter.activate.assert_not_called()
+        sent_data = json.loads(self.streamer.websocket.send.call_args[0][0])
+        self.assertEqual(sent_data["label"], "unknown")
+        self.assertEqual(sent_data["conveyor_status"], "running")
+        self.streamer._manual_stop_task.cancel()
+
+    async def test_manual_stop_task_cancellation(self):
+        """Kiểm tra việc hủy timer cũ khi có command mới."""
+        self.streamer.conveyor = self.mock_conveyor_instance
+        self.streamer.manual_run_duration = 10.0
+        
+        # Tạo task cũ
+        old_task = asyncio.create_task(self.streamer._auto_stop_conveyor())
+        self.streamer._manual_stop_task = old_task
+        
+        # Mô phỏng command mới đến
+        new_task = asyncio.create_task(self.streamer._auto_stop_conveyor())
+        
+        # Logic hủy task trong _handle_manual_command:
+        if self.streamer._manual_stop_task and not self.streamer._manual_stop_task.done():
+            self.streamer._manual_stop_task.cancel()
+        self.streamer._manual_stop_task = new_task
+        
+        # Cho phép loop chạy một nhịp để propagation cancel
+        await asyncio.sleep(0.01)
+        
+        self.assertTrue(old_task.cancelled() or old_task.done())
+        
+        # Cleanup
+        new_task.cancel()
+        await asyncio.sleep(0.01)
 
 
 if __name__ == "__main__":

@@ -778,7 +778,7 @@ async def test_manual_control_skips_model_load_and_queues_commands(self):
 | Camera không hiển thị | Camera DV20 cần warmup | Đợi 10s, nếu vẫn timeout thử: `v4l2-ctl --list-devices` |
 | Servo không gạt | Servo pin sai hoặc không cấp điện | Kiểm tra servo wiring, cấp 5V 2A |
 | Memory leak | Chạy lâu bị OOM | Check: `_acks.pop()` được gọi sau send_result, queue không đầy |
-| Frame ID trùng | Reconnect quá nhanh | Server có idempotency, bỏ qua frame ID trùng, ACK lại |
+| Frame ID trùng | Reconnect | Server có idempotency, bỏ qua frame ID trùng, ACK lại. Frame ID tăng xuyên suốt vòng đời instance Pi, không reset về 0 khi reconnect. |
 | Confidence không random | Bug trong _fake_confidence | Check random.uniform() returns float, không int |
 
 ---

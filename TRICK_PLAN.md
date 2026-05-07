@@ -54,7 +54,7 @@ Thêm xử lý `keydown` ẩn:
 - Không thêm button, panel, status, text hướng dẫn hoặc bất kỳ dấu hiệu UI nào về manual mode.
 - Chỉ gửi command khi dashboard WebSocket đang connected.
 - Bỏ qua `event.repeat` để tránh spam khi người dùng giữ phím.
-- Thêm debounce tối thiểu khoảng `300ms` giữa hai command.
+- Thêm debounce tối thiểu `COMMAND_DEBOUNCE_MS = 300` (ms) giữa hai command.
 - Với phím hợp lệ, gửi message qua `/ws/dashboard`:
 
 ```json
@@ -62,7 +62,8 @@ Thêm xử lý `keydown` ẩn:
   "type": "manual_command",
   "command_id": "timestamp-random",
   "label": "cam",
-  "source_key": "1"
+  "source_key": "1",
+  "timestamp": 1778080000.123
 }
 ```
 
@@ -134,9 +135,9 @@ Trong `CameraStreamer.__init__`, thêm state:
 - `_manual_stop_task: asyncio.Task | None`
 - `_frame_id: int = 0`  # counter instance dùng chung cho cả auto và manual mode, tăng xuyên suốt vòng đời streamer để tránh trùng frame_id với server idempotency
 
-Lưu ý về model ONNX: Trong v1, `FruitClassifier` vẫn được load bình thường (dòng `self.classifier = FruitClassifier(model_path)`) ngay cả khi `--manual-control`, do `CameraStreamer.__init__` được gọi trước khi biết chế độ chạy. Điều này không ảnh hưởng chức năng — model chiếm RAM (~100-200MB) nhưng không được gọi inference. Có thể tối ưu sau bằng cách lazy-load classifier chỉ khi cần.
+Lưu ý về model ONNX: Trong v1, `CameraStreamer` thực hiện conditional loading: chỉ khởi tạo `FruitClassifier` nếu `model_path` khác `None`. Khi chạy với `--manual-control`, `main()` sẽ truyền `model_path=None`, giúp tiết kiệm RAM (~100-200MB) do không phải load model AI không cần thiết.
 
-**Quan trọng:** Trong `main()`, cần bỏ qua `os.path.exists(MODEL)` check khi `--manual-control`, vì check này (cam_stream.py:540-543) sẽ chặn `--manual-control` ngay từ đầu nếu file model không tồn tại. Sửa logic trong `main()`: nếu `args.manual_control`, bỏ qua check model và truyền `model_path=None` hoặc path giả vào `CameraStreamer`. Đồng thời, `CameraStreamer.__init__` cần lazy-load classifier: chỉ gọi `FruitClassifier(model_path)` nếu `model_path` không phải None.
+**Quan trọng:** Trong `main()`, bỏ qua `os.path.exists(MODEL)` check khi `--manual-control`.
 
 Điều chỉnh `_consume_messages()`:
 

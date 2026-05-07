@@ -242,11 +242,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.addEventListener('keydown', (event) => {
-        const label = manualKeyMap[event.key];
-        if (!label || event.repeat) return;
+        // Check socket connection first for safety
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        
+        // Then check event.target to avoid potential null reference
         const tagName = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '';
         if (tagName === 'input' || tagName === 'textarea' || event.target.isContentEditable) return;
-        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        
+        const label = manualKeyMap[event.key];
+        if (!label || event.repeat) return;
         if (['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'].includes(event.key)) {
             event.preventDefault();
         }
