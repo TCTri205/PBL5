@@ -661,9 +661,14 @@ class CameraStreamer:
                 # ─── Tắt cảm biến ngay sau khi phát hiện (không nhận tín hiệu mới trong chu kỳ) ───
                 self.conveyor.disable_sensor()
 
-                # *** Bắt đầu chu kỳ 10 giây ***
+                # *** Bắt đầu đếm chu kỳ 10 giây ngay từ lúc phát hiện ***
                 cycle_start = asyncio.get_event_loop().time()
                 logger.info("🔔 Phát hiện vật thể! Bắt đầu chu kỳ 10s.")
+
+                # Chờ vật thể ổn định trước khi chụp ảnh theo cấu hình --capture-delay
+                if self.capture_delay > 0:
+                    logger.info(f"⏱️ Chờ {self.capture_delay}s trước khi chụp ảnh...")
+                    await asyncio.sleep(self.capture_delay)
 
                 # ─── BƯỚC 2: Chụp ảnh (băng chuyền đang dừng → ảnh rõ nét) ───
                 ret, frame = self.get_latest_frame()
