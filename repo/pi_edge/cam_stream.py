@@ -603,13 +603,16 @@ class CameraStreamer:
             await self.cleanup()
 
     async def run_pipeline(self, cam_idx=None):
-        """Vòng lặp Pipeline: Chụp ảnh -> Queue -> Xử lý song song."""
+        """
+        Vòng lặp Pipeline theo chu kỳ cố định:
+        Sensor phát hiện → Chụp ảnh → Inference → Servo gạt + Gửi server → Băng chuyền chạy → Hết 10s → Dừng.
+        """
+        CYCLE_DURATION = 10.0  # Mỗi chu kỳ kéo dài 10 giây
+
         self._stop_event.clear()
         self._cleaned_up = False
-        
-        # Re-initialize queues to clear any stale items from previous runs
-        self._inference_queue = asyncio.Queue(maxsize=5)
-        self._sorting_queue = asyncio.Queue(maxsize=10)
+
+        # Chỉ cần network queue cho luồng gửi ảnh riêng
         self._network_queue = asyncio.Queue(maxsize=10)
 
         self.cap = self.init_camera(manual_idx=cam_idx)
@@ -627,42 +630,47 @@ class CameraStreamer:
         if self.classifier is None:
             raise FatalPipelineError("Auto mode requires a model classifier.")
 
-        # Băng chuyền chạy TRƯỚC khi tạo worker (C3: Fix race condition)
-        self.conveyor.start()
-        logger.info("🚀 Pipeline started in parallel mode.")
+        # *** Băng chuyền KHÔNG chạy khi bắt đầu ***
+        self.conveyor.stop()
+        self.conveyor.sorter.reset_all()
+        logger.info("🚀 Pipeline started (Cycle mode: 10s per detection).")
 
-        # Khởi động các worker song song
+        # Chỉ khởi động network worker (gửi ảnh luồng riêng) và reconnect worker
         self._pipeline_tasks = [
-            asyncio.create_task(self._inference_worker()),
-            asyncio.create_task(self._sorting_worker()),
             asyncio.create_task(self._network_worker()),
             asyncio.create_task(self._reconnect_worker())
         ]
 
         cam_fail_count = 0
-        reinit_fail_count = 0 # W4: Track consecutive re-init failures
+        reinit_fail_count = 0
 
         try:
             while not self._stop_event.is_set():
-                # ─── BƯỚC 1: Chờ cảm biến phát hiện trái cây ───
-                if not await self.conveyor.wait_for_object(timeout=30.0):
+                # ─── Đảm bảo trạng thái sạch đầu chu kỳ ───
+                self.conveyor.stop()
+                self.conveyor.sorter.reset_all()
+
+                # ─── Bật cảm biến, sẵn sàng cho chu kỳ mới ───
+                self.conveyor.enable_sensor()
+
+                # ─── BƯỚC 1: Chờ cảm biến phát hiện vật cản ───
+                logger.info("⏳ Đợi vật thể tại cảm biến...")
+                if not await self.conveyor.wait_for_object(timeout=60.0):
                     continue
 
-                # ─── BƯỚC 2: Tạm dừng để ảnh ổn định (Cấu hình) ───
-                if self.capture_delay > 0:
-                    self.conveyor.stop()
-                    await asyncio.sleep(self.capture_delay)
+                # ─── Tắt cảm biến ngay sau khi phát hiện (không nhận tín hiệu mới trong chu kỳ) ───
+                self.conveyor.disable_sensor()
 
-                # ─── BƯỚC 3: Chụp ảnh ───
+                # *** Bắt đầu chu kỳ 10 giây ***
+                cycle_start = asyncio.get_event_loop().time()
+                logger.info("🔔 Phát hiện vật thể! Bắt đầu chu kỳ 10s.")
+
+                # ─── BƯỚC 2: Chụp ảnh (băng chuyền đang dừng → ảnh rõ nét) ───
                 ret, frame = self.get_latest_frame()
-                
-                # Sau khi chụp xong, cho băng chuyền chạy tiếp ngay để đón quả mới
-                self.conveyor.start()
 
                 if not ret or frame is None:
                     cam_fail_count += 1
-                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/{self.max_frame_retries}).")
-                    
+                    logger.warning(f"⚠️ Chụp ảnh thất bại ({cam_fail_count}/{self.max_frame_retries}).")
                     if cam_fail_count >= self.max_frame_retries:
                         logger.warning("🔄 Attempting camera RE-INIT...")
                         self._pause_servos()
@@ -671,11 +679,8 @@ class CameraStreamer:
                         await asyncio.sleep(1.0)
                         self.cap = self.init_camera(manual_idx=cam_idx)
                         self._resume_servos()
-                        
-                        # Thử lại 1 lần sau re-init
                         await asyncio.sleep(2.0)
                         ret, frame = self.get_latest_frame()
-                        
                         if not ret:
                             reinit_fail_count += 1
                             logger.error(f"❌ Camera re-init failed ({reinit_fail_count}/3).")
@@ -683,42 +688,66 @@ class CameraStreamer:
                                 raise FatalPipelineError("Camera re-init failed 3 times consecutively.")
                             cam_fail_count = 0
                             continue
-                    
                     if not ret:
                         continue
-                
+
                 cam_fail_count = 0
-                reinit_fail_count = 0 # Reset sau khi có frame thành công
+                reinit_fail_count = 0
+                self._frame_id += 1
+                frame_id = self._frame_id
+                logger.info(f"📸 Captured Frame {frame_id}")
 
-                # ─── BƯỚC 4: Đẩy vào Queue để xử lý song song ───
+                # ─── BƯỚC 3: Nhận diện (Inference) ───
+                loop = asyncio.get_running_loop()
+                t0 = time.perf_counter()
+                label, confidence = await loop.run_in_executor(
+                    self.executor,
+                    self.classifier.predict,
+                    frame,
+                    self.confidence_thresh,
+                )
+                inference_ms = (time.perf_counter() - t0) * 1000
+                if label is None:
+                    label = "unknown"
+                logger.info(f"🧠 Inference: {label.upper()} ({confidence:.1%}) in {inference_ms:.1f}ms")
+
+                # ─── BƯỚC 4: Gửi ảnh lên server (luồng riêng, không chờ) ───
                 try:
-                    # KHÔNG dùng .copy() để tiết kiệm CPU/RAM (cv2.read đã tạo mảng mới)
-                    self._inference_queue.put_nowait({
-                        "frame": frame, 
-                        "frame_id": self._frame_id
+                    encoded_image = self._encode_frame(frame)
+                    self._network_queue.put_nowait({
+                        "label": label,
+                        "confidence": confidence,
+                        "frame_id": frame_id,
+                        "encoded_image": encoded_image,
+                        "conveyor_status": "running"
                     })
-                    logger.info(f"📸 Captured Frame {self._frame_id}, sent to inference.")
-                    self._frame_id += 1
                 except asyncio.QueueFull:
-                    logger.warning(f"⚠️ Pipeline OVERLOAD! Queues are full. Skipping frame {self._frame_id}.")
-                # ─── BƯỚC 5: Đợi quả rời khỏi vùng sensor ───
-                # Quả đang ở vị trí sensor, khi băng chạy quả sẽ di chuyển đi
-                await asyncio.sleep(self.resume_delay)
+                    logger.warning(f"📡 Network queue full, dropping frame {frame_id}")
 
-                if not await self._wait_for_clear_safe():
-                    logger.error("🛑 Emergency Stop: Sensor did not clear after sorting.")
-                    self.conveyor.stop()
-                    raise FatalPipelineError("Cảm biến vẫn bị che sau khi phân loại. Kiểm tra sensor GPIO 17 hoặc vật kẹt.")
+                # ─── BƯỚC 5: Kích hoạt servo (nếu nhận diện được) ───
+                if label and label != "unknown":
+                    servo_label = label
+                    if servo_label in self.conveyor.sorter.servos:
+                        active_angle = self.conveyor.sorter.active_angles.get(servo_label, -60)
+                        self.conveyor.sorter.servos[servo_label].angle = active_angle
+                        logger.info(f"🔧 Servo {servo_label.upper()} gạt ra ({active_angle}°)")
+                else:
+                    logger.info(f"⏭️ Không nhận diện được, bỏ qua servo.")
 
-                # ─── BƯỚC 6: Tiếp tục ngay (Không đợi servo thu về) ───
-                # Servo tự động thu về trong background task đã tạo ở BƯỚC 7.
-                # Bỏ qua việc await servo_task để tăng tốc độ phân loại quả tiếp theo.
-                pass
-                
-                # Kiểm tra nếu connection bị đóng giữa chừng
-                if self.is_ws_closed:
-                    logger.warning("⚠️ Websocket disconnected. Sorting continues offline while reconnecting...")
-                    # Không break nữa để hệ thống vẫn tự động chạy khi mất mạng
+                # ─── BƯỚC 6: Cho băng chuyền chạy ───
+                self.conveyor.start()
+
+                # ─── BƯỚC 7: Chờ hết chu kỳ 10 giây ───
+                elapsed = asyncio.get_event_loop().time() - cycle_start
+                remaining = CYCLE_DURATION - elapsed
+                if remaining > 0:
+                    logger.info(f"⏱️ Băng chuyền chạy, còn {remaining:.1f}s...")
+                    await asyncio.sleep(remaining)
+
+                # ─── BƯỚC 8: Kết thúc chu kỳ — Dừng & Reset ───
+                self.conveyor.stop()
+                self.conveyor.sorter.reset_all()
+                logger.info(f"✅ Chu kỳ Frame {frame_id} hoàn tất. Dừng băng chuyền, thu servo.")
 
         except FatalPipelineError:
             raise
@@ -726,9 +755,9 @@ class CameraStreamer:
             logger.error(f"🔥 Pipeline error: {e}")
         finally:
             self._stop_event.set()
-            self.conveyor.stop()  # Đảm bảo dừng băng chuyền khi thoát (Hardware Safety)
-            
-            # Cancel current workers to avoid duplicates on retry
+            self.conveyor.stop()
+            self.conveyor.sorter.reset_all()
+
             for task in self._pipeline_tasks:
                 if not task.done():
                     task.cancel()

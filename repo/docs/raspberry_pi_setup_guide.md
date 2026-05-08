@@ -5,6 +5,7 @@ Hướng dẫn này giúp bạn thiết lập Raspberry Pi 4 từ con số 0 cho
 ---
 
 ## 📥 1. Flash OS (Raspberry Pi Imager)
+
 Sử dụng phần mềm **Raspberry Pi Imager** để nạp hệ điều hành. Đây là bước cực kỳ quan trọng để định hình tài nguyên cho máy.
 
 1. **CHOOSE DEVICE**: Chọn **Raspberry Pi 4**.
@@ -37,11 +38,13 @@ Sử dụng phần mềm **Raspberry Pi Imager** để nạp hệ điều hành.
 ---
 
 ## 🔑 2. Truy cập SSH (Điều khiển từ xa)
+
 Cắm USB vào Pi, cấp nguồn và đợi khoảng 2-3 phút để máy khởi động và nhận Wifi. Trên Laptop, mở Terminal hoặc PowerShell:
 
 ```bash
 ssh pi@pbl5-pi.local
 ```
+
 *Nhập mật khẩu là `123456` (hoặc mật khẩu bạn đã đặt). Nếu được hỏi "Are you sure...", gõ `yes`.*
 
 > [!NOTE]
@@ -50,22 +53,29 @@ ssh pi@pbl5-pi.local
 ---
 
 ## ⚙️ 3. Cấu hình Phần cứng (Hardware Config)
+
 Xác định loại camera bạn đang sử dụng để có bước kiểm tra phù hợp:
 
 ### A. Nếu dùng Webcam USB (Cắm trực tiếp vào cổng USB)
+
 Webcam USB thường được Linux nhận diện tự động mà không cần cấu hình thêm.
 
 1. **Kiểm tra kết nối vật lý**:
+
    ```bash
    lsusb
    # Tìm dòng có tên Webcam của bạn (VD: Logitech, USB Composite Device...)
    ```
+
 2. **Kiểm tra thiết bị video**:
+
    ```bash
    ls /dev/video*
    # Nếu hiện ra /dev/video0 là hệ thống đã nhận diện thành công.
    ```
+
 3. **Kiểm tra chi tiết (Tùy chọn)**:
+
    ```bash
    # Cài đặt bộ công cụ v4l-utils
    sudo apt update && sudo apt install -y v4l-utils
@@ -74,6 +84,7 @@ Webcam USB thường được Linux nhận diện tự động mà không cần 
    ```
 
 ### B. Nếu dùng Camera Module (Cáp dẹt CSI)
+
 Đảm bảo bạn đã cắm cáp dẹt vào khe CSI (nằm giữa Audio Jack và Micro-HDMI). Mặt có lá đồng hướng về phía cổng HDMI.
 
 - **Raspberry Pi OS "Bookworm" (Bản mới nhất)**:
@@ -90,6 +101,7 @@ Webcam USB thường được Linux nhận diện tự động mà không cần 
 ---
 
 ## 📦 4. Thiết lập Môi trường Lập trình (Environment)
+
 Môi trường ảo giúp các thư viện AI không xung đột với hệ thống.
 
 ```bash
@@ -114,9 +126,12 @@ pip install -r requirements.txt
 ```
 
 ### 4.5. Chuẩn bị Mô hình (Model)
+
 Để Pi có thể nhận diện trái cây, bạn cần copy file model đã huấn luyện từ Laptop/Colab sang Pi.
+
 - **Vị trí**: `~/pbl5_project/repo/pi_edge/model/best.onnx`
 - **Cách copy (từ máy tính)**:
+
   ```bash
   scp best.onnx pi@pbl5-pi.local:~/pbl5_project/repo/pi_edge/model/
   ```
@@ -124,6 +139,7 @@ pip install -r requirements.txt
 ---
 
 ## 🛠️ 5. Tối ưu hóa: Tăng Swap Size (Chống tràn RAM)
+
 Khi chạy các mô hình AI (như YOLO, ONNX), Pi có thể bị lỗi "Out of Memory". Ta cần mượn dung lượng ổ cứng làm RAM ảo (Swap).
 
 > [!IMPORTANT]
@@ -149,6 +165,7 @@ sudo dphys-swapfile swapon
 ---
 
 ## ⚙️ 6. Cấu hình Tự động chạy (Auto-start)
+
 Để hệ thống AI tự khởi chạy mỗi khi cắm điện, ta sử dụng **systemd service**.
 
 1. **Kiểm tra file service**:
@@ -158,6 +175,7 @@ sudo dphys-swapfile swapon
    - `ExecStart`: Đường dẫn tới python trong `venv` và lệnh chạy `start_pi.py`.
 
    *Ví dụ cấu hình chuẩn cho user `pi`:*
+
    ```ini
    [Service]
    User=pi
@@ -167,6 +185,7 @@ sudo dphys-swapfile swapon
    ```
 
 2. **Cài đặt service vào hệ thống**:
+
 ```bash
 # Copy file vào thư mục hệ thống (Chạy trên Pi)
 sudo cp ~/pbl5_project/repo/pi_edge/deployment/pbl5_pi.service /etc/systemd/system/
@@ -181,6 +200,7 @@ sudo systemctl status pbl5_pi.service
 ```
 
 > [!TIP]
+>
 > - **Chạy dịch vụ**: `sudo systemctl start pbl5_pi.service`
 > - **Dừng dịch vụ**: `sudo systemctl stop pbl5_pi.service`
 > - **Khởi động lại**: `sudo systemctl restart pbl5_pi.service`
@@ -191,36 +211,46 @@ sudo systemctl status pbl5_pi.service
 ---
 
 ## 🚀 7. Quy trình vận hành (Thứ tự bắt buộc)
+
 Để hệ thống hoạt động ổn định và không bị lỗi kết nối, bạn **PHẢI** tuân thủ thứ tự sau:
 
 ### Bước 1: Chuẩn bị trên Laptop (Server)
+
 1. Mở Terminal tại thư mục `repo`.
 2. Kích hoạt môi trường ảo: `.venv\Scripts\activate` (Windows).
 3. **Cài đặt thư viện (Chỉ cần làm lần đầu)**:
+
    ```bash
    pip install -r requirements.txt
    ```
+
 4. **Khởi chạy Server**:
+
    ```bash
    python start_server.py
    ```
+
 5. Truy cập `http://localhost:8765` để mở Dashboard.
 
 ### Bước 2: Chuẩn bị trên Raspberry Pi (Edge)
+
 1. Đảm bảo Pi đã cắm điện và kết nối cùng mạng WiFi với Laptop.
 2. Kiểm tra file cấu hình Service đã điền đúng IP của Laptop chưa.
 3. Chạy dịch vụ:
+
    ```bash
    sudo systemctl start pbl5_pi.service
    ```
 
 ### Bước 3: Giám sát
+
 - Nhìn vào màn hình Dashboard trên Laptop, nếu thấy khung hình Camera hiện lên và bắt đầu có dữ liệu nhảy là bạn đã thành công!
 - Nếu không thấy hình, dùng lệnh `sudo journalctl -u pbl5_pi.service -f` trên Pi để xem lỗi.
 
 ---
 
 ## 🔗 Các bước tiếp theo
+
 - [Hướng dẫn Triển khai Inference AI](./raspberry_pi_inference_guide.md) ⭐
 - [Kế hoạch tích hợp hệ thống](./system_integration_plan.md)
 - [Khắc phục sự cố](./troubleshooting.md)

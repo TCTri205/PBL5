@@ -181,6 +181,7 @@ class ConveyorController:
             self.sensor = MockSensor(is_active_state=False)
 
         self._running = False
+        self._sensor_enabled = True  # Cờ bật/tắt cảm biến
         self.sorter = ServoSorter(config=sorter_config)
         sensor_logic = "active-low" if self.sensor_active_low else "active-high"
         logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}, Logic={sensor_logic}).")
@@ -194,6 +195,16 @@ class ConveyorController:
     def has_object(self) -> bool:
         """True nếu cảm biến phát hiện có vật cản."""
         return self._sensor_blocked()
+
+    def enable_sensor(self):
+        """Bật cảm biến — cho phép phát hiện vật thể."""
+        self._sensor_enabled = True
+        logger.info("👁️ Cảm biến hồng ngoại: BẬT")
+
+    def disable_sensor(self):
+        """Tắt cảm biến — bỏ qua mọi tín hiệu cho đến khi bật lại."""
+        self._sensor_enabled = False
+        logger.info("🚫 Cảm biến hồng ngoại: TẮT")
 
     def start(self):
         """Khởi động băng chuyền (chiều ngược)."""
@@ -222,16 +233,25 @@ class ConveyorController:
     async def wait_for_object(self, timeout: float = 30.0) -> bool:
         """
         Chờ không đồng bộ cho đến khi cảm biến phát hiện vật (có debouncing).
+        Chỉ hoạt động khi cảm biến đang được bật (_sensor_enabled = True).
         
         Returns:
-            True nếu phát hiện vật ổn định, False nếu timeout.
+            True nếu phát hiện vật ổn định, False nếu timeout hoặc sensor bị tắt.
         """
+        if not self._sensor_enabled:
+            logger.debug("⏸️ Sensor đang tắt, bỏ qua wait_for_object.")
+            return False
+
         deadline = asyncio.get_event_loop().time() + timeout
         consecutive_hits = 0
         required_hits = 2 # Yêu cầu 2 lần đọc liên tiếp (khoảng 100ms) để xác nhận
 
         while True:
             if asyncio.get_event_loop().time() > deadline:
+                return False
+
+            # Kiểm tra cờ mỗi vòng lặp (cho phép tắt giữa chừng)
+            if not self._sensor_enabled:
                 return False
 
             if self._sensor_blocked():
