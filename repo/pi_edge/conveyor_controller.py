@@ -187,9 +187,17 @@ class ConveyorController:
         logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}, Logic={sensor_logic}).")
 
     def _sensor_blocked(self) -> bool:
-        """Chuẩn hóa trạng thái sensor về True = có vật cản."""
+        """Chuẩn hóa trạng thái sensor về True = có vật cản.
+        
+        E18-D80NK (NPN) với pull_up=True trên GPIO:
+        - is_active = True  → pin LOW  → cảm biến KHÔNG phát hiện vật (idle)
+        - is_active = False → pin HIGH → cảm biến ĐANG phát hiện vật (blocked)
+        
+        Vì vậy: blocked = NOT is_active (đảo ngược).
+        """
         raw_active = bool(self.sensor.is_active)
-        return raw_active if self.sensor_active_low else not raw_active
+        # Đảo logic: is_active=True (pin LOW) = KHÔNG có vật cản
+        return not raw_active if self.sensor_active_low else raw_active
 
     @property
     def has_object(self) -> bool:
