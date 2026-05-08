@@ -651,7 +651,7 @@ class CameraStreamer:
                 self.conveyor.sorter.reset_all()
 
                 # ─── Bật cảm biến, sẵn sàng cho chu kỳ mới ───
-                self.conveyor.enable_sensor()
+                await self.conveyor.enable_sensor()
 
                 # ─── BƯỚC 1: Chờ cảm biến phát hiện vật cản ───
                 logger.info("⏳ Đợi vật thể tại cảm biến...")

@@ -196,8 +196,17 @@ class ConveyorController:
         """True nếu cảm biến phát hiện có vật cản."""
         return self._sensor_blocked()
 
-    def enable_sensor(self):
-        """Bật cảm biến — cho phép phát hiện vật thể."""
+    async def enable_sensor(self, cooldown: float = 0.5):
+        """Bật cảm biến — cho phép phát hiện vật thể.
+        
+        Args:
+            cooldown: Thời gian chờ (giây) sau khi bật để nhiễu điện từ 
+                      servo/motor ổn định trước khi bắt đầu đọc sensor.
+        """
+        # Chờ nhiễu điện từ servo PWM / motor L298N lắng xuống
+        if cooldown > 0:
+            logger.info(f"⏳ Chờ {cooldown}s để sensor ổn định (tránh nhiễu servo/motor)...")
+            await asyncio.sleep(cooldown)
         self._sensor_enabled = True
         logger.info("👁️ Cảm biến hồng ngoại: BẬT")
 
@@ -244,7 +253,10 @@ class ConveyorController:
 
         deadline = asyncio.get_event_loop().time() + timeout
         consecutive_hits = 0
-        required_hits = 2 # Yêu cầu 2 lần đọc liên tiếp (khoảng 100ms) để xác nhận
+        # Yêu cầu 5 lần đọc liên tiếp (250ms) để xác nhận có vật cản thật.
+        # Giá trị cũ (2 lần / 100ms) quá thấp → nhiễu điện từ servo/motor 
+        # gây false positive ngay sau khi kết thúc chu kỳ.
+        required_hits = 5
 
         while True:
             if asyncio.get_event_loop().time() > deadline:
@@ -257,6 +269,7 @@ class ConveyorController:
             if self._sensor_blocked():
                 consecutive_hits += 1
                 if consecutive_hits >= required_hits:
+                    logger.debug(f"✅ Sensor xác nhận vật cản ({required_hits} lần liên tiếp).")
                     return True
             else:
                 consecutive_hits = 0
