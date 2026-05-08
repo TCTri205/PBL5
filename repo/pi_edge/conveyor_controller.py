@@ -59,7 +59,8 @@ class ServoSorter:
         self.servos = {}
         self.delays = {}
         self.active_angles = {}
-        self._reset_tasks = {} # Mapping label -> task
+        self._deadlines = {}  # label -> timestamp
+        self._active_tasks = set()
         
         # Nếu không có config truyền vào, dùng mặc định
         conf = config or self.DEFAULT_CONFIG
@@ -81,46 +82,58 @@ class ServoSorter:
             except Exception as e:
                 logger.error(f"❌ Không thể khởi tạo servo cho {label} trên pin {pin}: {e}")
 
-    async def activate(self, label: str):
+    async def activate(self, label: str, hold_duration: float = 2.0):
         """
-        Kích hoạt servo gạt 40 độ và tự động thu về sau một khoảng thời gian.
-        
-        Returns:
-            asyncio.Task hoặc None — caller có thể await task để đợi servo reset xong.
+        Kích hoạt servo gạt trái cây sau một khoảng thời gian chờ (travel delay).
         """
         if label in self.servos:
-            delay = self.delays.get(label, 5.0)
+            travel_delay = self.delays.get(label, 5.0)
             active_angle = self.active_angles.get(label, 40)
-            logger.info(f"🔧 Gạt Servo {label.upper()} ({active_angle}°). Chờ {delay}s để thu về...")
             
-            # Gạt theo góc đã cấu hình (40 hoặc -40)
-            self.servos[label].angle = active_angle
+            # Tính toán thời điểm quả sẽ thoát khỏi vùng gạt
+            arrival_time = asyncio.get_event_loop().time() + travel_delay
+            close_time = arrival_time + hold_duration
             
-            # Hủy task reset cũ nếu đang chạy (tránh xung đột khi quả tới dồn dập)
-            if label in self._reset_tasks:
-                self._reset_tasks[label].cancel()
+            # Cập nhật deadline xa nhất cho servo này (để xử lý nhiều quả cùng loại nối đuôi)
+            self._deadlines[label] = max(self._deadlines.get(label, 0), close_time)
             
-            # Lên lịch thu về tự động
-            task = asyncio.create_task(self._auto_reset(self.servos[label], delay, label))
-            self._reset_tasks[label] = task
+            # Chạy task xử lý gạt (không cancel task cũ để hỗ trợ dồn toa)
+            task = asyncio.create_task(self._sorting_sequence(label, travel_delay, active_angle))
+            self._active_tasks.add(task)
+            task.add_done_callback(self._active_tasks.discard)
             return task
         else:
             if label != "unknown":
                 logger.warning(f"⚠️ Không tìm thấy servo cho label: {label}")
             return None
 
-    async def _auto_reset(self, servo, delay, label):
-        """Tự động đưa servo về vị trí 0 sau một khoảng delay."""
+    async def _sorting_sequence(self, label, travel_delay, active_angle):
+        """Trình tự logic: Chờ -> Mở -> Đợi hết deadline -> Đóng."""
         try:
-            await asyncio.sleep(delay)
-            logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
-            servo.angle = 0
+            # 1. Chờ trái cây di chuyển đến cổng (trừ 0.3s trừ hao thời gian servo quay)
+            wait_time = max(0, travel_delay - 0.3)
+            await asyncio.sleep(wait_time)
+            
+            # 2. Mở servo
+            if self.servos[label].angle != active_angle:
+                logger.info(f"🔧 ACTION: Mở Servo {label.upper()} ({active_angle}°).")
+                self.servos[label].angle = active_angle
+            
+            # 3. Chờ cho đến khi vượt qua deadline (có thể đã được kéo dài bởi quả sau)
+            while True:
+                now = asyncio.get_event_loop().time()
+                remaining = self._deadlines.get(label, 0) - now
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(remaining)
+            
+            # 4. Thu về (chỉ khi không có quả nào khác đang chờ deadline mới)
+            if asyncio.get_event_loop().time() >= self._deadlines.get(label, 0):
+                logger.info(f"🔄 ACTION: Thu Servo {label.upper()} về vị trí 0°.")
+                self.servos[label].angle = 0
+            
         except asyncio.CancelledError:
-            pass  # Graceful cancellation
-        finally:
-            # Xóa task khỏi danh sách theo dõi
-            if self._reset_tasks.get(label) == asyncio.current_task():
-                self._reset_tasks.pop(label, None)
+            pass
 
     def reset_all(self):
         """Thu tất cả servo về vị trí nghỉ ngay lập tức."""
@@ -130,7 +143,7 @@ class ServoSorter:
     def close(self):
         """Giải phóng tài nguyên."""
         # Cancel các task đang đợi reset nếu có
-        for task in self._reset_tasks.values():
+        for task in list(self._active_tasks):
             task.cancel()
         for s in self.servos.values():
             s.close()

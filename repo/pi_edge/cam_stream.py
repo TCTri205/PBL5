@@ -192,10 +192,9 @@ class CameraStreamer:
         # Tương thích cho websockets >= 14.0
         return self.websocket.state.name == "CLOSED"
 
-    async def send_result(self, label, confidence, frame_id, frame=None, conveyor_status="stopped"):
-        """Gửi kết quả nhận diện sang laptop. Trả về True nếu thành công."""
+    async def _send_payload(self, label, confidence, frame_id, encoded_image=None, conveyor_status="stopped"):
+        """Gửi payload đã chuẩn bị sang laptop."""
         if self.is_ws_closed:
-            logger.warning("⚠️ Cannot send: Websocket is closed.")
             return False
 
         payload = {
@@ -205,7 +204,7 @@ class CameraStreamer:
             "label": label,
             "confidence": float(confidence),
             "conveyor_status": conveyor_status,
-            "image": self._encode_frame(frame) if frame is not None else None,
+            "image": encoded_image,
         }
 
         try:
@@ -249,15 +248,17 @@ class CameraStreamer:
                 label = payload_data["label"]
                 confidence = payload_data["confidence"]
                 frame_id = payload_data["frame_id"]
-                frame = payload_data.get("frame")
+                # Dùng ảnh đã được encode sẵn (tiết kiệm CPU luồng mạng)
+                encoded_image = payload_data.get("encoded_image")
                 conveyor_status = payload_data.get("conveyor_status", "stopped")
 
                 sent_success = False
                 # Thử gửi tối đa 3 lần (E6)
                 for retry in range(3):
-                    if await self.send_result(label, confidence, frame_id, frame=frame, conveyor_status=conveyor_status):
+                    if await self._send_payload(label, confidence, frame_id, encoded_image, conveyor_status):
                         sent_success = True
                         break
+                    logger.warning(f"🔄 Network retry {retry+1}/3 for frame {frame_id}...")
                     await asyncio.sleep(1.0)
                 
                 if not sent_success:
@@ -322,14 +323,26 @@ class CameraStreamer:
                 # Đẩy sang Sorter và Network (C1: pass conveyor_status="running")
                 if label is None:
                     label = "unknown"
+                
+                # 1. Gửi lệnh cho Servo (Quan trọng nhất - KHÔNG CHỜ MẠNG)
                 await self._sorting_queue.put({"label": label, "confidence": confidence, "frame_id": frame_id})
-                await self._network_queue.put({
-                    "label": label, 
-                    "confidence": confidence, 
-                    "frame_id": frame_id, 
-                    "frame": frame,
-                    "conveyor_status": "running"
-                })
+                
+                # 2. Gửi dữ liệu lên Network (Dùng put_nowait để không block nếu mạng lag)
+                try:
+                    # Encode JPEG ngay tại đây để tiết kiệm RAM trong Queue
+                    encoded_image = self._encode_frame(frame)
+                    
+                    self._network_queue.put_nowait({
+                        "label": label, 
+                        "confidence": confidence, 
+                        "frame_id": frame_id, 
+                        "encoded_image": encoded_image, 
+                        "conveyor_status": "running"
+                    })
+                except asyncio.QueueFull:
+                    logger.warning(f"📡 Network Queue FULL! Dropping frame {frame_id} from streaming, but sorting continues.")
+                except Exception as e:
+                    logger.error(f"⚠️ Error preparing network payload: {e}")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -534,12 +547,13 @@ class CameraStreamer:
             await self.conveyor.sorter.activate(label)
 
         sent_success = False
+        encoded_image = self._encode_frame(frame) if ret else None
         for retry in range(3):
-            if await self.send_result(
+            if await self._send_payload(
                 label,
                 confidence,
                 frame_id,
-                frame=frame,
+                encoded_image=encoded_image,
                 conveyor_status="stopped",
             ):
                 sent_success = True
@@ -678,9 +692,9 @@ class CameraStreamer:
 
                 # ─── BƯỚC 4: Đẩy vào Queue để xử lý song song ───
                 try:
-                    # Dùng put_nowait để không làm nghẽn loop chính nếu queue đầy
+                    # KHÔNG dùng .copy() để tiết kiệm CPU/RAM (cv2.read đã tạo mảng mới)
                     self._inference_queue.put_nowait({
-                        "frame": frame.copy(), 
+                        "frame": frame, 
                         "frame_id": self._frame_id
                     })
                     logger.info(f"📸 Captured Frame {self._frame_id}, sent to inference.")
