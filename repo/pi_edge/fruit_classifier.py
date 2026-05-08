@@ -6,6 +6,9 @@ import cv2
 import onnxruntime as ort
 from typing import Tuple, Union, List, Optional
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 class FruitClassifier:
     def __init__(
@@ -47,7 +50,7 @@ class FruitClassifier:
                     names_dict = json.loads(model_meta["names"].replace("'", '"'))
                 
                 self.class_names = [names_dict[i] for i in sorted(names_dict.keys())]
-                print(f"📦 Auto-loaded classes from model: {self.class_names}")
+                logger.info(f"📦 Auto-loaded classes from model: {self.class_names}")
             else:
                 self.class_names = ["cam", "chanh", "quyt"]
         except Exception:
@@ -59,9 +62,9 @@ class FruitClassifier:
             t0 = time.time()
             self.session.run(None, {self.input_name: dummy})
             warmup_ms = (time.time() - t0) * 1000
-            print(f"🔥 ONNX session warmed up in {warmup_ms:.1f}ms")
+            logger.info(f"🔥 ONNX session warmed up in {warmup_ms:.1f}ms")
         except Exception as e:
-            print(f"⚠️ Warm-up failed: {e}")
+            logger.warning(f"⚠️ Warm-up failed: {e}")
 
     def preprocess(self, img: np.ndarray) -> np.ndarray:
         """
@@ -104,7 +107,10 @@ class FruitClassifier:
             img = input_data
 
         if img is None:
-            return None, 0.0
+            return "unknown", 0.0
+
+        # 2. Preprocess
+        blob = self.preprocess(img)
 
         # 3. Inference
         outputs = self.session.run(None, {self.input_name: blob})
@@ -133,7 +139,7 @@ class FruitClassifier:
             else:
                 idx = 0 
         else:
-            print(f"⚠️ Unknown model output shape: {raw_output.shape}")
+            logger.warning(f"⚠️ Unknown model output shape: {raw_output.shape}")
             return "unknown", 0.0
 
         # 5. Threshold & Label Mapping

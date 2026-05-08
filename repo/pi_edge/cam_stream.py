@@ -320,6 +320,8 @@ class CameraStreamer:
                 logger.info(f"🧠 Inference: {label.upper()} ({confidence:.1%}) in {inference_ms:.1f}ms")
 
                 # Đẩy sang Sorter và Network (C1: pass conveyor_status="running")
+                if label is None:
+                    label = "unknown"
                 await self._sorting_queue.put({"label": label, "confidence": confidence, "frame_id": frame_id})
                 await self._network_queue.put({
                     "label": label, 
@@ -522,32 +524,13 @@ class CameraStreamer:
 
         self.conveyor.start()
 
-        ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+        ret, frame = self.get_latest_frame()
         if not ret:
             logger.warning("⚠️ Failed to grab manual frame.")
-            # Thử nhanh lại 1-2 frame trước khi re-init camera
-            for quick_retry in range(2):
-                await asyncio.sleep(0.2)
-                ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
-                if ret:
-                    logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
-                    break
-            if not ret:
-                logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
-                self._pause_servos()
-                if self.cap:
-                    self.cap.release()
-                await asyncio.sleep(1.0)
-                self.cap = self.init_camera()
-                if self.cap:
-                    ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-                self._resume_servos()
-
-        if not ret:
-            self.conveyor.stop()
-            raise FatalPipelineError("Camera lỗi khi chạy manual control.")
-
-        if label != "unknown":
+            # Camera worker will handle re-init if needed, but for manual 
+            # we just notify that capture failed.
+        
+        if label != "unknown" and ret:
             await self.conveyor.sorter.activate(label)
 
         sent_success = False
@@ -704,7 +687,7 @@ class CameraStreamer:
                     self._frame_id += 1
                 except asyncio.QueueFull:
                     logger.warning(f"⚠️ Pipeline OVERLOAD! Queues are full. Skipping frame {self._frame_id}.")
-                # ─── BƯỚC 9: Đợi quả rời khỏi vùng sensor ───
+                # ─── BƯỚC 5: Đợi quả rời khỏi vùng sensor ───
                 # Quả đang ở vị trí sensor, khi băng chạy quả sẽ di chuyển đi
                 await asyncio.sleep(self.resume_delay)
 
@@ -713,7 +696,7 @@ class CameraStreamer:
                     self.conveyor.stop()
                     raise FatalPipelineError("Cảm biến vẫn bị che sau khi phân loại. Kiểm tra sensor GPIO 17 hoặc vật kẹt.")
 
-                # ─── BƯỚC 10: Tiếp tục ngay (Không đợi servo thu về) ───
+                # ─── BƯỚC 6: Tiếp tục ngay (Không đợi servo thu về) ───
                 # Servo tự động thu về trong background task đã tạo ở BƯỚC 7.
                 # Bỏ qua việc await servo_task để tăng tốc độ phân loại quả tiếp theo.
                 pass
