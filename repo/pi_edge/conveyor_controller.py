@@ -60,7 +60,10 @@ class ServoSorter:
         self.delays = {}
         self.active_angles = {}
         self._tasks = {} # Mapping label -> task
+        
+        # Nếu không có config truyền vào, dùng mặc định
         conf = config or self.DEFAULT_CONFIG
+        logger.info(f"⚙️ Khởi tạo ServoSorter với config: {conf}")
         for label, (pin, delay, active_angle) in conf.items():
             try:
                 # Không set min_angle=0, max_angle=180 để dùng mặc định (-90 đến 90)
@@ -137,7 +140,7 @@ class ConveyorController:
     Thiết kế để chạy song song với pipeline camera (asyncio-compatible).
     """
 
-    def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17, sensor_active_low=True):
+    def __init__(self, motor_fwd_pin=22, motor_bwd_pin=23, sensor_pin=17, sensor_active_low=True, sorter_config=None):
         logger.info("⚙️ Khởi tạo ConveyorController...")
         self.sensor_active_low = sensor_active_low
         # Sử dụng DigitalOutputDevice thay cho Motor để tránh lỗi PWM trên driver Native/LGPIO
@@ -163,7 +166,7 @@ class ConveyorController:
             self.sensor = MockSensor(is_active_state=False)
 
         self._running = False
-        self.sorter = ServoSorter()
+        self.sorter = ServoSorter(config=sorter_config)
         sensor_logic = "active-low" if self.sensor_active_low else "active-high"
         logger.info(f"✅ ConveyorController sẵn sàng (Pins: Fwd={motor_fwd_pin}, Bwd={motor_bwd_pin}, Sensor={sensor_pin}, Logic={sensor_logic}).")
 

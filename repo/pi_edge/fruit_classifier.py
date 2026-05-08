@@ -20,9 +20,14 @@ class FruitClassifier:
             class_names: Danh sách tên các lớp (mặc định là cam, chanh, quyt)
         """
         self.imgsz = imgsz
+        # Tối ưu hóa cho Raspberry Pi: Đa luồng CPU và tối ưu đồ thị
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 4  # Số nhân CPU của Pi (thường là 4)
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        
         # Prefer CPUExecutionProvider for Raspberry Pi for stability
         self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
+            model_path, sess_options=opts, providers=["CPUExecutionProvider"]
         )
         self.input_name = self.session.get_inputs()[0].name
 

@@ -66,6 +66,7 @@ class CameraStreamer:
         jpeg_quality=50,
         ack_timeout=1.5,
         max_frame_retries=3,
+        sorter_config=None,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -104,12 +105,26 @@ class CameraStreamer:
         self._manual_command_queue = asyncio.Queue()
         self._manual_stop_task = None
         self._frame_id = 0
+        self._sorting_task_running = False
+
+        # Pipeline Queues
+        self._inference_queue = asyncio.Queue(maxsize=5) # Giới hạn backlog
+        self._sorting_queue = asyncio.Queue(maxsize=10)
+        self._network_queue = asyncio.Queue(maxsize=10) # Quan trọng: Giới hạn để không tràn RAM khi mất mạng lâu
 
         # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
         # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
         # ConveyorController sẽ được tạo trong run_pipeline() SAU KHI camera đã sẵn sàng.
         self.conveyor = None
+        self.sorter_config = sorter_config
         
+        # Background Camera Reader
+        self._bg_frame = None
+        self._bg_ret = False
+        self._bg_running = False
+        self._bg_thread = None
+        self._bg_lock = threading.Lock()
+
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
 
@@ -122,8 +137,15 @@ class CameraStreamer:
 
     async def connect(self):
         """Duy trì kết nối WebSocket tới server."""
+        if not self.is_ws_closed:
+            return True
+            
         try:
             logger.info(f"🔄 Connecting to {self.server_url}...")
+            # Dọn dẹp task cũ nếu có
+            if hasattr(self, '_consumer_task') and not self._consumer_task.done():
+                self._consumer_task.cancel()
+                
             self.websocket = await websockets.connect(
                 self.server_url, ping_interval=20, ping_timeout=10
             )
@@ -210,6 +232,141 @@ class CameraStreamer:
             logger.error(f"❌ Error sending result: {e}")
             return False
 
+    async def _network_worker(self):
+        """Worker gửi kết quả lên server ngầm (Background)."""
+        logger.info("📡 Network worker started.")
+        while not self._stop_event.is_set():
+            try:
+                # Đợi dữ liệu cần gửi
+                payload_data = await self._network_queue.get()
+                label = payload_data["label"]
+                confidence = payload_data["confidence"]
+                frame_id = payload_data["frame_id"]
+                frame = payload_data.get("frame")
+
+                sent_success = False
+                # Thử gửi tối đa 2 lần
+                for retry in range(2):
+                    if await self.send_result(label, confidence, frame_id, frame=frame):
+                        sent_success = True
+                        break
+                    await asyncio.sleep(0.5)
+                
+                if not sent_success:
+                    logger.warning(f"📡 Network lag: Frame {frame_id} ({label}) failed to send, but pipeline continues.")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"💥 Network worker error: {e}")
+                await asyncio.sleep(1)
+            finally:
+                try:
+                    self._network_queue.task_done()
+                except Exception:
+                    pass
+        logger.info("📡 Network worker stopped.")
+
+    async def _reconnect_worker(self):
+        """Worker tự động kết nối lại nếu mất mạng mà không làm dừng pipeline."""
+        while not self._stop_event.is_set():
+            try:
+                if self.is_ws_closed:
+                    logger.info("🔄 Websocket closed. Attempting background reconnect...")
+                    await self.connect()
+                await asyncio.sleep(10) # Thử lại sau mỗi 10 giây
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"💥 Reconnect worker error: {e}")
+                await asyncio.sleep(10)
+
+    async def _inference_worker(self):
+        """Worker chạy model phân loại."""
+        logger.info("🧠 Inference worker started.")
+        loop = asyncio.get_running_loop()
+        while not self._stop_event.is_set():
+            try:
+                item = await self._inference_queue.get()
+                frame = item["frame"]
+                frame_id = item["frame_id"]
+
+                # Chạy inference trên thread pool
+                label, confidence = await loop.run_in_executor(
+                    self.executor,
+                    self.classifier.predict,
+                    frame,
+                    self.confidence_thresh,
+                )
+
+                # Đẩy sang Sorter và Network
+                await self._sorting_queue.put({"label": label, "confidence": confidence, "frame_id": frame_id})
+                await self._network_queue.put({
+                    "label": label, 
+                    "confidence": confidence, 
+                    "frame_id": frame_id, 
+                    "frame": frame
+                })
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"💥 Inference worker error: {e}")
+            finally:
+                try:
+                    self._inference_queue.task_done()
+                except Exception:
+                    pass
+            
+        logger.info("🧠 Inference worker stopped.")
+
+    async def _sorting_worker(self):
+        """Worker điều khiển servo gạt quả (Không phụ thuộc vào mạng)."""
+        logger.info("🔧 Sorting worker started.")
+        while not self._stop_event.is_set():
+            try:
+                result = await self._sorting_queue.get()
+                label = result["label"]
+                frame_id = result["frame_id"]
+                
+                if label and label != "unknown":
+                    # Kích hoạt servo ngay lập tức khi có kết quả
+                    await self.conveyor.sorter.activate(label)
+                    logger.info(f"✅ ACTION: Sorted {label.upper()} (Frame {frame_id})")
+                else:
+                    logger.info(f"⏭️  ACTION: Passed (Unknown/Low confidence) (Frame {frame_id})")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"💥 Sorting worker error: {e}")
+            finally:
+                try:
+                    self._sorting_queue.task_done()
+                except Exception:
+                    pass
+        logger.info("🔧 Sorting worker stopped.")
+
+    # ─── Background Camera Reader ─────────────────────────────────────
+
+    def _camera_worker(self):
+        """Thread chạy ngầm đọc camera liên tục để xóa buffer."""
+        logger.info("🧵 Background camera worker started.")
+        while self._bg_running:
+            if self.cap and self.cap.isOpened():
+                ret, frame = self.cap.read()
+                with self._lock:
+                    self._bg_ret = ret
+                    self._bg_frame = frame
+                if not ret:
+                    # Nếu lỗi, đợi một chút để tránh chiếm dụng CPU
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.5)
+        logger.info("🧵 Background camera worker stopped.")
+
+    def get_latest_frame(self):
+        """Lấy frame mới nhất từ background worker."""
+        with self._lock:
+            return self._bg_ret, self._bg_frame
+
     # ─── Camera Initialization ────────────────────────────────────────
 
     def _read_with_timeout(self, cap, timeout=5.0):
@@ -239,11 +396,16 @@ class CameraStreamer:
     def init_camera(self, manual_idx=None):
         """
         Mở camera DV20 USB với MJPEG format.
-        
-        Sử dụng blocking cap.read() (KHÔNG dùng threading) để đợi frame đầu tiên,
-        vì camera Jieli Technology DV20 cần 6-9 giây để warm up và bắt đầu stream.
-        Đây là cùng phương pháp đã hoạt động trong manual test.
         """
+        # Dừng worker cũ nếu đang chạy
+        self._bg_running = False
+        if self._bg_thread and self._bg_thread.is_alive():
+            self._bg_thread.join(timeout=2.0)
+
+        # Sử dụng threading.Lock thay vì self._lock nếu chưa định nghĩa
+        if not hasattr(self, '_lock'):
+            self._lock = threading.Lock()
+
         indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
 
         for idx in indices:
@@ -284,6 +446,12 @@ class CameraStreamer:
         if manual_idx is not None:
             logger.warning(f"⚠️  Manual index {manual_idx} failed. Falling back to auto-discovery...")
             return self.init_camera(manual_idx=None)
+
+        # Start background worker after successful open
+        if not self._bg_running:
+            self._bg_running = True
+            self._bg_thread = threading.Thread(target=self._camera_worker, daemon=True)
+            self._bg_thread.start()
 
         return None
 
@@ -412,126 +580,85 @@ class CameraStreamer:
             await self.cleanup()
 
     async def run_pipeline(self, cam_idx=None):
-        """Vòng lặp: Chụp ảnh -> Phân loại (Async) -> Gửi kết quả."""
-        # QUAN TRỌNG: Init camera TRƯỚC conveyor.
-        # Servo software PWM gây nhiễu USB isochronous transfer → camera DV20 không stream.
+        """Vòng lặp Pipeline: Chụp ảnh -> Queue -> Xử lý song song."""
         self.cap = self.init_camera(manual_idx=cam_idx)
 
         if not self.cap:
             logger.error("❌ Error: Could not open any camera index.")
-            logger.error("💡 Hãy kiểm tra:")
-            logger.error("   1. Camera có được cắm chắc không? (rút ra cắm lại)")
-            logger.error("   2. Thử: v4l2-ctl --list-devices")
-            logger.error("   3. Thử: libcamera-hello (nếu dùng Pi Camera)")
-            logger.error("   4. Kiểm tra nguồn: vcgencmd get_throttled")
-            raise FatalPipelineError("Không thể mở camera sau khi thử tất cả chiến lược.")
+            raise FatalPipelineError("Không thể mở camera.")
 
-        # Khởi tạo ConveyorController SAU KHI camera đã hoạt động
         if self.conveyor is None:
-            self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
+            self.conveyor = ConveyorController(
+                sensor_active_low=self.sensor_active_low,
+                sorter_config=self.sorter_config
+            )
 
         if self.classifier is None:
             raise FatalPipelineError("Auto mode requires a model classifier.")
 
-        loop = asyncio.get_running_loop()
-        cam_fail_count = 0
+        # Khởi động các worker song song
+        workers = [
+            asyncio.create_task(self._inference_worker()),
+            asyncio.create_task(self._sorting_worker()),
+            asyncio.create_task(self._network_worker()),
+            asyncio.create_task(self._reconnect_worker())
+        ]
 
-        # Băng chuyền chạy ngược → đưa quả về phía cảm biến
+        # Băng chuyền chạy
         self.conveyor.start()
-        logger.info("⏳ Waiting for hardware stabilization (2s)...")
-        await asyncio.sleep(2.0)
+        logger.info("🚀 Pipeline started in parallel mode.")
+        cam_fail_count = 0
 
         try:
             while not self._stop_event.is_set():
-                # ─── BƯỚC 1: Đảm bảo băng chuyền đang chạy ───
-                if not self.conveyor._running:
-                    self.conveyor.start()
-
-                # ─── BƯỚC 2: Chờ cảm biến phát hiện trái cây ───
-                logger.info("🔍 Waiting for object...")
+                # ─── BƯỚC 1: Chờ cảm biến phát hiện trái cây ───
                 if not await self.conveyor.wait_for_object(timeout=30.0):
-                    logger.info("⏳ No object detected in 30s, continuing...")
                     continue
 
-                # ─── BƯỚC 3: DỪNG băng chuyền để chụp ảnh ổn định ───
-                self.conveyor.stop()
-                await asyncio.sleep(self.capture_delay)
+                # ─── BƯỚC 2: Tạm dừng để ảnh ổn định (Cấu hình) ───
+                if self.capture_delay > 0:
+                    self.conveyor.stop()
+                    await asyncio.sleep(self.capture_delay)
 
-                # ─── BƯỚC 4: Chụp ảnh ───
-                ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-                if not ret:
+                # ─── BƯỚC 3: Chụp ảnh ───
+                ret, frame = self.get_latest_frame()
+                
+                # Sau khi chụp xong, cho băng chuyền chạy tiếp ngay để đón quả mới
+                self.conveyor.start()
+
+                if not ret or frame is None:
                     cam_fail_count += 1
                     logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/{self.max_frame_retries}).")
-                    # Thử nhanh lại 1-2 frame trước khi re-init camera
-                    for quick_retry in range(2):
-                        await asyncio.sleep(0.2)
-                        ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
-                        if ret:
-                            logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
-                            cam_fail_count = 0
-                            break
-                    if not ret:
-                        logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
+                    
+                    if cam_fail_count >= self.max_frame_retries:
+                        logger.warning("🔄 Attempting camera RE-INIT...")
                         self._pause_servos()
-                        self.cap.release()
+                        if self.cap:
+                            self.cap.release()
                         await asyncio.sleep(1.0)
                         self.cap = self.init_camera(manual_idx=cam_idx)
-                        if self.cap:
-                            ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                         self._resume_servos()
-
-                if not ret:
-                    if cam_fail_count >= self.max_frame_retries:
-                        logger.error(f"🛑 Camera failed {self.max_frame_retries} times consecutively. Possible hardware issue.")
-                        self.conveyor.stop()
-                        raise FatalPipelineError(f"Camera lỗi liên tục {self.max_frame_retries} lần. Kiểm tra kết nối phần cứng.")
+                        
+                        # Thử lại 1 lần sau re-init
+                        await asyncio.sleep(2.0)
+                        ret, frame = self.get_latest_frame()
                     
-                    logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
-                    self.conveyor.start()
-                    await asyncio.sleep(self.resume_delay)
-                    if not await self._wait_for_clear_safe():
-                        logger.error("🛑 Emergency Stop: Sensor blocked after camera fail.")
-                        self.conveyor.stop()
-                        raise FatalPipelineError("Camera lỗi liên tục và cảm biến kẹt.")
-                    continue
+                    if not ret:
+                        continue
                 
                 cam_fail_count = 0
 
-                # ─── BƯỚC 5: Chạy inference (phân loại trái cây) ───
-                label, confidence = await loop.run_in_executor(
-                    self.executor,
-                    self.classifier.predict,
-                    frame,
-                    self.confidence_thresh,
-                )
-
-                # ─── BƯỚC 6: Gửi kết quả lên server & chờ ACK ───
-                if label:
-                    sent_success = False
-                    for retry in range(3):
-                        if await self.send_result(label, confidence, self._frame_id, frame=frame):
-                            sent_success = True
-                            break
-                        logger.warning(f"🔄 Retry sending/ACK ({retry+1}/3)...")
-                        await asyncio.sleep(1)
-                    
-                    if not sent_success:
-                        logger.error("🔥 Data loss prevention: FATAL network/ACK failure.")
-                        self.conveyor.stop()
-                        raise FatalPipelineError("Không thể gửi dữ liệu sau nhiều lần thử.")
-                    
+                # ─── BƯỚC 4: Đẩy vào Queue để xử lý song song ───
+                try:
+                    # Dùng put_nowait để không làm nghẽn loop chính nếu queue đầy
+                    self._inference_queue.put_nowait({
+                        "frame": frame.copy(), 
+                        "frame_id": self._frame_id
+                    })
+                    logger.info(f"📸 Captured Frame {self._frame_id}, sent to inference.")
                     self._frame_id += 1
-
-                # ─── BƯỚC 7: Kích hoạt servo gạt chắn nghiêng (deflector) ───
-                # Servo mở ra TRƯỚC → tạo chắn nghiêng trên băng chuyền
-                servo_task = None
-                if label and label != "unknown":
-                    servo_task = await self.conveyor.sorter.activate(label)
-
-                # ─── BƯỚC 8: Chạy lại băng chuyền ───
-                # Quả di chuyển trên băng → gặp chắn nghiêng → trượt rớt vào rổ phân loại
-                self.conveyor.start()
-
+                except asyncio.QueueFull:
+                    logger.warning(f"⚠️ Pipeline OVERLOAD! Queues are full. Skipping frame {self._frame_id}.")
                 # ─── BƯỚC 9: Đợi quả rời khỏi vùng sensor ───
                 # Quả đang ở vị trí sensor, khi băng chạy quả sẽ di chuyển đi
                 await asyncio.sleep(self.resume_delay)
@@ -541,14 +668,10 @@ class CameraStreamer:
                     self.conveyor.stop()
                     raise FatalPipelineError("Cảm biến vẫn bị che sau khi phân loại. Kiểm tra sensor GPIO 17 hoặc vật kẹt.")
 
-                # ─── BƯỚC 10: Đợi servo thu chắn nghiêng về (nếu chưa xong) ───
-                # Servo tự động thu về sau delay (5s/8s/11s tùy loại quả)
-                # Đợi để tránh quả tiếp theo bị chắn nhầm
-                if servo_task:
-                    try:
-                        await servo_task
-                    except asyncio.CancelledError:
-                        pass
+                # ─── BƯỚC 10: Tiếp tục ngay (Không đợi servo thu về) ───
+                # Servo tự động thu về trong background task đã tạo ở BƯỚC 7.
+                # Bỏ qua việc await servo_task để tăng tốc độ phân loại quả tiếp theo.
+                pass
                 
                 # Kiểm tra nếu connection bị đóng giữa chừng
                 if self.is_ws_closed:
@@ -568,6 +691,10 @@ class CameraStreamer:
         """Giải phóng tài nguyên (Camera, Websocket, Tasks, Executor)."""
         if hasattr(self, '_consumer_task'):
             self._consumer_task.cancel()
+
+        self._bg_running = False
+        if self._bg_thread and self._bg_thread.is_alive():
+            self._bg_thread.join(timeout=1.0)
 
         if hasattr(self, 'executor') and self.executor:
             self.executor.shutdown(wait=False)
@@ -700,6 +827,10 @@ async def main():
         "--max-frame-retries", type=int, default=3,
         help="Max consecutive frame capture failures before camera re-init",
     )
+    # Servo delays config
+    parser.add_argument("--delay-cam", type=float, default=5.0, help="Delay for Orange servo (s) [Default: 5.0]")
+    parser.add_argument("--delay-chanh", type=float, default=8.0, help="Delay for Lemon servo (s) [Default: 8.0]")
+    parser.add_argument("--delay-quyt", type=float, default=11.0, help="Delay for Tangerine servo (s) [Default: 11.0]")
 
     args = parser.parse_args()
 
@@ -726,6 +857,13 @@ async def main():
         logger.info("💡 Please ensure the model exists or provide path with --model")
         return
 
+    # Build sorter config from args
+    SORTER_CONFIG = {
+        "cam":   (5, args.delay_cam, 40),
+        "chanh": (6, args.delay_chanh, 40),
+        "quyt":  (26, args.delay_quyt, 40),
+    }
+
     streamer = CameraStreamer(
         model_path=None if args.manual_control else MODEL,
         server_url=SERVER,
@@ -742,6 +880,7 @@ async def main():
         jpeg_quality=args.jpeg_quality,
         ack_timeout=args.ack_timeout,
         max_frame_retries=args.max_frame_retries,
+        sorter_config=SORTER_CONFIG,
     )
 
     try:
