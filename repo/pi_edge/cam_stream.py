@@ -918,9 +918,9 @@ async def main():
 
     # Build sorter config from args
     SORTER_CONFIG = {
-        "cam":   (5, args.delay_cam, 40),
-        "chanh": (6, args.delay_chanh, 40),
-        "quyt":  (26, args.delay_quyt, 40),
+        "cam":   (5, args.delay_cam, -60),
+        "chanh": (6, args.delay_chanh, -60),
+        "quyt":  (26, args.delay_quyt, -60),
     }
 
     streamer = CameraStreamer(

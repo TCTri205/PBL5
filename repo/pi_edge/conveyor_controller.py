@@ -50,9 +50,9 @@ class ServoSorter:
 
     # Mapping: label -> (GPIO pin, delay, active_angle)
     DEFAULT_CONFIG = {
-        "cam":   (5, 5.0, 40),    # Servo 1: 5s, gạt 40 độ
-        "chanh": (6, 8.0, 40),    # Servo 2: 8s, gạt 40 độ
-        "quyt":  (26, 11.0, 40),  # Servo 3: 11s, gạt 40 độ
+        "cam":   (5, 5.0, -60),    # Servo 1: 5s, gạt -60 độ
+        "chanh": (6, 8.0, -60),    # Servo 2: 8s, gạt -60 độ
+        "quyt":  (26, 11.0, -60),  # Servo 3: 11s, gạt -60 độ
     }
 
     def __init__(self, config=None):
@@ -88,7 +88,7 @@ class ServoSorter:
         """
         if label in self.servos:
             travel_delay = self.delays.get(label, 5.0)
-            active_angle = self.active_angles.get(label, 40)
+            active_angle = self.active_angles.get(label, -60)
             
             # Tính toán thời điểm quả sẽ thoát khỏi vùng gạt
             arrival_time = asyncio.get_event_loop().time() + travel_delay

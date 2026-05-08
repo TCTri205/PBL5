@@ -64,10 +64,9 @@ def check_servos():
         
         for i, pin in enumerate(pins):
             try:
-                s = AngularServo(pin, min_angle=0, max_angle=180, 
-                                min_pulse_width=0.0005, max_pulse_width=0.0025)
-                logger.info(f"Testing Servo {labels[i]} -> 40 degrees...")
-                s.angle = 40
+                s = AngularServo(pin, min_pulse_width=0.0005, max_pulse_width=0.0025)
+                logger.info(f"Testing Servo {labels[i]} -> -60 degrees...")
+                s.angle = -60
                 time.sleep(0.5)
                 s.angle = 0
                 time.sleep(0.5)
