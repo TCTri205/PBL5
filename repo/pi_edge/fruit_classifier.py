@@ -53,6 +53,16 @@ class FruitClassifier:
         except Exception:
             self.class_names = class_names if class_names else ["cam", "chanh", "quyt"]
 
+        # Warm-up (E3)
+        try:
+            dummy = np.zeros((1, 3, self.imgsz, self.imgsz), dtype=np.float32)
+            t0 = time.time()
+            self.session.run(None, {self.input_name: dummy})
+            warmup_ms = (time.time() - t0) * 1000
+            print(f"🔥 ONNX session warmed up in {warmup_ms:.1f}ms")
+        except Exception as e:
+            print(f"⚠️ Warm-up failed: {e}")
+
     def preprocess(self, img: np.ndarray) -> np.ndarray:
         """
         Tiền xử lý ảnh giống như training pipeline.
@@ -96,19 +106,46 @@ class FruitClassifier:
         if img is None:
             return None, 0.0
 
-        blob = self.preprocess(img)
+        # 3. Inference
         outputs = self.session.run(None, {self.input_name: blob})
 
-        # Giả sử output là tensor xác suất (logits -> softmax)
-        probs = outputs[0][0]
+        # 4. Post-process (E4: Robust output handling)
+        raw_output = outputs[0]
+        
+        # Format 1: Classification (1, num_classes)
+        if raw_output.ndim == 2 and raw_output.shape[0] == 1:
+            probs = raw_output[0]
+            idx = np.argmax(probs)
+            confidence = float(probs[idx])
+        
+        # Format 2: Detection (1, num_detections, 5+num_classes) - YOLO Detect
+        elif raw_output.ndim == 3 and raw_output.shape[0] == 1:
+            # Lấy detection có confidence cao nhất
+            detections = raw_output[0] # Shape (N, 5+C)
+            # Giả sử format: [x, y, w, h, box_conf, class_probs...]
+            confidences = detections[:, 4] if detections.shape[1] > 4 else np.max(detections, axis=1)
+            idx_det = np.argmax(confidences)
+            confidence = float(confidences[idx_det])
+            
+            if detections.shape[1] > 5:
+                class_probs = detections[idx_det, 5:]
+                idx = np.argmax(class_probs)
+            else:
+                idx = 0 
+        else:
+            print(f"⚠️ Unknown model output shape: {raw_output.shape}")
+            return "unknown", 0.0
 
-        idx = np.argmax(probs)
-        confidence = probs[idx]
-
+        # 5. Threshold & Label Mapping
         if confidence < confidence_threshold:
             return "unknown", confidence
 
-        return self.class_names[idx], confidence
+        try:
+            label = self.class_names[idx]
+        except (IndexError, TypeError):
+            label = f"class_{idx}"
+            
+        return label, confidence
 
 
 if __name__ == "__main__":

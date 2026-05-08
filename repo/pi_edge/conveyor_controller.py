@@ -59,7 +59,7 @@ class ServoSorter:
         self.servos = {}
         self.delays = {}
         self.active_angles = {}
-        self._tasks = {} # Mapping label -> task
+        self._reset_tasks = {} # Mapping label -> task
         
         # Nếu không có config truyền vào, dùng mặc định
         conf = config or self.DEFAULT_CONFIG
@@ -93,32 +93,34 @@ class ServoSorter:
             active_angle = self.active_angles.get(label, 40)
             logger.info(f"🔧 Gạt Servo {label.upper()} ({active_angle}°). Chờ {delay}s để thu về...")
             
-            # Nếu đang có task reset cho label này, cancel nó để tránh xung đột
-            if label in self._tasks:
-                self._tasks[label].cancel()
-
             # Gạt theo góc đã cấu hình (40 hoặc -40)
             self.servos[label].angle = active_angle
             
-            # Chạy task thu về trong background
-            task = asyncio.create_task(self._delayed_reset(label, delay))
-            self._tasks[label] = task
-            task.add_done_callback(lambda t: self._tasks.pop(label, None) if self._tasks.get(label) == t else None)
+            # Hủy task reset cũ nếu đang chạy (tránh xung đột khi quả tới dồn dập)
+            if label in self._reset_tasks:
+                self._reset_tasks[label].cancel()
+            
+            # Lên lịch thu về tự động
+            task = asyncio.create_task(self._auto_reset(self.servos[label], delay, label))
+            self._reset_tasks[label] = task
             return task
         else:
             if label != "unknown":
                 logger.warning(f"⚠️ Không tìm thấy servo cho label: {label}")
             return None
 
-    async def _delayed_reset(self, label: str, delay: float):
-        """Chờ một thời gian rồi đưa servo về 0 độ."""
+    async def _auto_reset(self, servo, delay, label):
+        """Tự động đưa servo về vị trí 0 sau một khoảng delay."""
         try:
             await asyncio.sleep(delay)
-            if label in self.servos and label in self._tasks:
-                logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
-                self.servos[label].angle = 0
+            logger.info(f"🔄 Thu Servo {label.upper()} về vị trí ban đầu (0°).")
+            servo.angle = 0
         except asyncio.CancelledError:
             pass  # Graceful cancellation
+        finally:
+            # Xóa task khỏi danh sách theo dõi
+            if self._reset_tasks.get(label) == asyncio.current_task():
+                self._reset_tasks.pop(label, None)
 
     def reset_all(self):
         """Thu tất cả servo về vị trí nghỉ ngay lập tức."""
@@ -128,7 +130,7 @@ class ServoSorter:
     def close(self):
         """Giải phóng tài nguyên."""
         # Cancel các task đang đợi reset nếu có
-        for task in self._tasks.values():
+        for task in self._reset_tasks.values():
             task.cancel()
         for s in self.servos.values():
             s.close()
@@ -216,18 +218,17 @@ class ConveyorController:
         required_hits = 2 # Yêu cầu 2 lần đọc liên tiếp (khoảng 100ms) để xác nhận
 
         while True:
+            if asyncio.get_event_loop().time() > deadline:
+                return False
+
             if self._sensor_blocked():
                 consecutive_hits += 1
                 if consecutive_hits >= required_hits:
                     return True
             else:
                 consecutive_hits = 0
-            
-            if asyncio.get_event_loop().time() > deadline:
-                return False
                 
             await asyncio.sleep(0.05)
-        return False
 
     async def wait_until_clear(self, timeout: float = 5.0) -> bool:
         """
@@ -242,6 +243,9 @@ class ConveyorController:
         required_clear = 3  # 3 lần đọc liên tiếp (~150ms) sensor trống mới xác nhận
 
         while True:
+            if asyncio.get_event_loop().time() > deadline:
+                return False
+
             if not self._sensor_blocked():
                 consecutive_clear += 1
                 if consecutive_clear >= required_clear:
@@ -249,7 +253,4 @@ class ConveyorController:
             else:
                 consecutive_clear = 0
 
-            if asyncio.get_event_loop().time() > deadline:
-                return False
             await asyncio.sleep(0.05)
-        return True

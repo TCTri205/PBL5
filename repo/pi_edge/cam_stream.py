@@ -123,10 +123,13 @@ class CameraStreamer:
         self._bg_ret = False
         self._bg_running = False
         self._bg_thread = None
-        self._bg_lock = threading.Lock()
+        # Thread safety lock for frame access
+        self._lock = threading.Lock()
 
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
+        self._pipeline_tasks = []
+        self._cleaned_up = False
 
     def _encode_frame(self, frame):
         """Encode OpenCV frame → base64 JPEG string để gửi qua WebSocket."""
@@ -237,23 +240,28 @@ class CameraStreamer:
         logger.info("📡 Network worker started.")
         while not self._stop_event.is_set():
             try:
-                # Đợi dữ liệu cần gửi
-                payload_data = await self._network_queue.get()
+                # Đợi dữ liệu cần gửi với timeout để kiểm tra stop_event
+                try:
+                    payload_data = await asyncio.wait_for(self._network_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 label = payload_data["label"]
                 confidence = payload_data["confidence"]
                 frame_id = payload_data["frame_id"]
                 frame = payload_data.get("frame")
+                conveyor_status = payload_data.get("conveyor_status", "stopped")
 
                 sent_success = False
-                # Thử gửi tối đa 2 lần
-                for retry in range(2):
-                    if await self.send_result(label, confidence, frame_id, frame=frame):
+                # Thử gửi tối đa 3 lần (E6)
+                for retry in range(3):
+                    if await self.send_result(label, confidence, frame_id, frame=frame, conveyor_status=conveyor_status):
                         sent_success = True
                         break
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(1.0)
                 
                 if not sent_success:
-                    logger.warning(f"📡 Network lag: Frame {frame_id} ({label}) failed to send, but pipeline continues.")
+                    logger.warning(f"📡 Network lag: Frame {frame_id} ({label}) failed to send after 3 retries, but pipeline continues.")
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -286,25 +294,39 @@ class CameraStreamer:
         loop = asyncio.get_running_loop()
         while not self._stop_event.is_set():
             try:
-                item = await self._inference_queue.get()
+                # Đợi dữ liệu với timeout (W3)
+                try:
+                    item = await asyncio.wait_for(self._inference_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 frame = item["frame"]
                 frame_id = item["frame_id"]
 
-                # Chạy inference trên thread pool
+                # Null check for safety (C2)
+                if self.classifier is None:
+                    logger.error("❌ Classifier not available in inference worker!")
+                    break
+
+                # Chạy inference trên thread pool và đo thời gian (E1)
+                t0 = time.perf_counter()
                 label, confidence = await loop.run_in_executor(
                     self.executor,
                     self.classifier.predict,
                     frame,
                     self.confidence_thresh,
                 )
+                inference_ms = (time.perf_counter() - t0) * 1000
+                logger.info(f"🧠 Inference: {label.upper()} ({confidence:.1%}) in {inference_ms:.1f}ms")
 
-                # Đẩy sang Sorter và Network
+                # Đẩy sang Sorter và Network (C1: pass conveyor_status="running")
                 await self._sorting_queue.put({"label": label, "confidence": confidence, "frame_id": frame_id})
                 await self._network_queue.put({
                     "label": label, 
                     "confidence": confidence, 
                     "frame_id": frame_id, 
-                    "frame": frame
+                    "frame": frame,
+                    "conveyor_status": "running"
                 })
             except asyncio.CancelledError:
                 break
@@ -323,7 +345,12 @@ class CameraStreamer:
         logger.info("🔧 Sorting worker started.")
         while not self._stop_event.is_set():
             try:
-                result = await self._sorting_queue.get()
+                # Đợi dữ liệu với timeout (W3)
+                try:
+                    result = await asyncio.wait_for(self._sorting_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 label = result["label"]
                 frame_id = result["frame_id"]
                 
@@ -358,6 +385,8 @@ class CameraStreamer:
                 if not ret:
                     # Nếu lỗi, đợi một chút để tránh chiếm dụng CPU
                     time.sleep(0.1)
+                else:
+                    time.sleep(0.01)
             else:
                 time.sleep(0.5)
         logger.info("🧵 Background camera worker stopped.")
@@ -402,10 +431,6 @@ class CameraStreamer:
         if self._bg_thread and self._bg_thread.is_alive():
             self._bg_thread.join(timeout=2.0)
 
-        # Sử dụng threading.Lock thay vì self._lock nếu chưa định nghĩa
-        if not hasattr(self, '_lock'):
-            self._lock = threading.Lock()
-
         indices = [manual_idx] if manual_idx is not None else [0, 1, 2]
 
         for idx in indices:
@@ -437,6 +462,13 @@ class CameraStreamer:
                 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 logger.info(f"  ✅ Camera OK: index={idx}, MJPEG, {actual_w}x{actual_h}")
+                
+                # Start background worker after successful open
+                if not self._bg_running:
+                    self._bg_running = True
+                    self._bg_thread = threading.Thread(target=self._camera_worker, daemon=True)
+                    self._bg_thread.start()
+                
                 return cap
 
             logger.warning(f"  ❌ No frames from index={idx} (V4L2 timeout)")
@@ -446,12 +478,6 @@ class CameraStreamer:
         if manual_idx is not None:
             logger.warning(f"⚠️  Manual index {manual_idx} failed. Falling back to auto-discovery...")
             return self.init_camera(manual_idx=None)
-
-        # Start background worker after successful open
-        if not self._bg_running:
-            self._bg_running = True
-            self._bg_thread = threading.Thread(target=self._camera_worker, daemon=True)
-            self._bg_thread.start()
 
         return None
 
@@ -581,6 +607,14 @@ class CameraStreamer:
 
     async def run_pipeline(self, cam_idx=None):
         """Vòng lặp Pipeline: Chụp ảnh -> Queue -> Xử lý song song."""
+        self._stop_event.clear()
+        self._cleaned_up = False
+        
+        # Re-initialize queues to clear any stale items from previous runs
+        self._inference_queue = asyncio.Queue(maxsize=5)
+        self._sorting_queue = asyncio.Queue(maxsize=10)
+        self._network_queue = asyncio.Queue(maxsize=10)
+
         self.cap = self.init_camera(manual_idx=cam_idx)
 
         if not self.cap:
@@ -596,18 +630,20 @@ class CameraStreamer:
         if self.classifier is None:
             raise FatalPipelineError("Auto mode requires a model classifier.")
 
+        # Băng chuyền chạy TRƯỚC khi tạo worker (C3: Fix race condition)
+        self.conveyor.start()
+        logger.info("🚀 Pipeline started in parallel mode.")
+
         # Khởi động các worker song song
-        workers = [
+        self._pipeline_tasks = [
             asyncio.create_task(self._inference_worker()),
             asyncio.create_task(self._sorting_worker()),
             asyncio.create_task(self._network_worker()),
             asyncio.create_task(self._reconnect_worker())
         ]
 
-        # Băng chuyền chạy
-        self.conveyor.start()
-        logger.info("🚀 Pipeline started in parallel mode.")
         cam_fail_count = 0
+        reinit_fail_count = 0 # W4: Track consecutive re-init failures
 
         try:
             while not self._stop_event.is_set():
@@ -642,11 +678,20 @@ class CameraStreamer:
                         # Thử lại 1 lần sau re-init
                         await asyncio.sleep(2.0)
                         ret, frame = self.get_latest_frame()
+                        
+                        if not ret:
+                            reinit_fail_count += 1
+                            logger.error(f"❌ Camera re-init failed ({reinit_fail_count}/3).")
+                            if reinit_fail_count >= 3:
+                                raise FatalPipelineError("Camera re-init failed 3 times consecutively.")
+                            cam_fail_count = 0
+                            continue
                     
                     if not ret:
                         continue
                 
                 cam_fail_count = 0
+                reinit_fail_count = 0 # Reset sau khi có frame thành công
 
                 # ─── BƯỚC 4: Đẩy vào Queue để xử lý song song ───
                 try:
@@ -675,20 +720,37 @@ class CameraStreamer:
                 
                 # Kiểm tra nếu connection bị đóng giữa chừng
                 if self.is_ws_closed:
-                    logger.warning("⚠️  Websocket connection lost. Breaking pipeline...")
-                    break
+                    logger.warning("⚠️ Websocket disconnected. Sorting continues offline while reconnecting...")
+                    # Không break nữa để hệ thống vẫn tự động chạy khi mất mạng
 
         except FatalPipelineError:
             raise
         except Exception as e:
             logger.error(f"🔥 Pipeline error: {e}")
         finally:
-            # Lưu ý: Không shutdown conveyor ở đây vì nó được quản lý ở main()
-            # để tránh bị khởi tạo lại khi reconnect
-            await self.cleanup()
+            self._stop_event.set()
+            self.conveyor.stop()  # Đảm bảo dừng băng chuyền khi thoát (Hardware Safety)
+            
+            # Cancel current workers to avoid duplicates on retry
+            for task in self._pipeline_tasks:
+                if not task.done():
+                    task.cancel()
+            self._pipeline_tasks = []
 
     async def cleanup(self):
         """Giải phóng tài nguyên (Camera, Websocket, Tasks, Executor)."""
+        if getattr(self, '_cleaned_up', False):
+            return
+        self._cleaned_up = True
+        
+        self._stop_event.set()
+
+        # Cancel all background tasks
+        for task in self._pipeline_tasks:
+            if not task.done():
+                task.cancel()
+        self._pipeline_tasks = []
+
         if hasattr(self, '_consumer_task'):
             self._consumer_task.cancel()
 

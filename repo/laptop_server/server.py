@@ -282,11 +282,21 @@ async def dashboard_ws_handler(request):
     finally:
         correlation_id_var.reset(token)
 
+async def health_handler(request):
+    """Health check endpoint (E5)."""
+    return web.json_response({
+        "status": "ok",
+        "pi_clients": len(pi_clients),
+        "dashboard_clients": len(dashboard_clients),
+        "timestamp": time.time()
+    })
+
 async def init_app():
     app = web.Application()
     
     # Routes
     app.router.add_get('/', index_handler)
+    app.router.add_get('/health', health_handler)
     app.router.add_get('/ws/pi', pi_ws_handler)
     app.router.add_get('/ws/dashboard', dashboard_ws_handler)
     
