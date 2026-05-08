@@ -9,6 +9,7 @@ import os
 import sys
 import logging
 import argparse
+import random
 from concurrent.futures import ThreadPoolExecutor
 
 # Tắt log cảnh báo GPU/Discovery của ONNX Runtime (PHẢI đặt trước khi import onnxruntime)
@@ -19,6 +20,18 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from fruit_classifier import FruitClassifier
 from conveyor_controller import ConveyorController
 
+# Import constants from server if possible, or define locally for Pi
+VALID_MANUAL_KEYS = {
+    "1",
+    "2",
+    "3",
+    "4",
+    "ArrowLeft",
+    "ArrowDown",
+    "ArrowRight",
+    "ArrowUp",
+}
+
 # Cấu hình logging
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +39,8 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
+
+VALID_MANUAL_LABELS = {"cam", "chanh", "quyt", "unknown"}
 
 
 class FatalPipelineError(Exception):
@@ -46,12 +61,25 @@ class CameraStreamer:
         sensor_bypass_timeout=20.0,
         sensor_active_low=True,
         sensor_bypass_enabled=False,
+        manual_control=False,
+        manual_run_duration=2.0,
+        jpeg_quality=50,
+        ack_timeout=1.5,
+        max_frame_retries=3,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
         """
-        logger.info(f"🧠 Loading model from: {model_path}")
-        self.classifier = FruitClassifier(model_path)
+        if model_path is not None:
+            logger.info(f"🧠 Loading model from: {model_path}")
+            try:
+                self.classifier = FruitClassifier(model_path)
+            except FileNotFoundError:
+                raise FatalPipelineError(f"Model file not found at {model_path}")
+            except Exception as e:
+                raise FatalPipelineError(f"Failed to load model: {e}")
+        else:
+            self.classifier = None
         self.server_url = server_url
         self.device_id = device_id
         self.confidence_thresh = confidence_thresh
@@ -68,6 +96,14 @@ class CameraStreamer:
         self.sensor_bypass_timeout = sensor_bypass_timeout
         self.sensor_active_low = sensor_active_low
         self.sensor_bypass_enabled = sensor_bypass_enabled
+        self.manual_control = manual_control
+        self.manual_run_duration = manual_run_duration
+        self.jpeg_quality = jpeg_quality
+        self.ack_timeout = ack_timeout
+        self.max_frame_retries = max_frame_retries
+        self._manual_command_queue = asyncio.Queue()
+        self._manual_stop_task = None
+        self._frame_id = 0
 
         # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
         # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
@@ -77,11 +113,11 @@ class CameraStreamer:
         # Cơ chế dừng pipeline chủ động (hữu ích cho testing)
         self._stop_event = asyncio.Event()
 
-    def _encode_frame(self, frame, quality=50):
+    def _encode_frame(self, frame):
         """Encode OpenCV frame → base64 JPEG string để gửi qua WebSocket."""
         if frame is None:
             return None
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         return base64.b64encode(buffer).decode('utf-8')
 
     async def connect(self):
@@ -109,6 +145,12 @@ class CameraStreamer:
                         ack_id = data["ack_frame"]
                         if ack_id in self._acks:
                             self._acks[ack_id].set_result(True)
+                    elif data.get("type") == "manual_command":
+                        label = data.get("label")
+                        if self.manual_control and label in VALID_MANUAL_LABELS:
+                            await self._manual_command_queue.put(data)
+                        else:
+                            logger.warning(f"⚠️ Ignoring invalid manual command: {data}")
                 except Exception as e:
                     logger.warning(f"⚠️ Error parsing server message: {e}")
         except Exception:
@@ -125,7 +167,7 @@ class CameraStreamer:
         # Tương thích cho websockets >= 14.0
         return self.websocket.state.name == "CLOSED"
 
-    async def send_result(self, label, confidence, frame_id, frame=None):
+    async def send_result(self, label, confidence, frame_id, frame=None, conveyor_status="stopped"):
         """Gửi kết quả nhận diện sang laptop. Trả về True nếu thành công."""
         if self.is_ws_closed:
             logger.warning("⚠️ Cannot send: Websocket is closed.")
@@ -137,7 +179,7 @@ class CameraStreamer:
             "timestamp": time.time(),
             "label": label,
             "confidence": float(confidence),
-            "conveyor_status": "stopped",
+            "conveyor_status": conveyor_status,
             "image": self._encode_frame(frame) if frame is not None else None,
         }
 
@@ -154,7 +196,7 @@ class CameraStreamer:
                 logger.info(f"📤 Sent: {label.upper()} ({confidence:.1%})")
 
                 # 3. Đợi ACK từ server
-                await asyncio.wait_for(future, timeout=3.0)
+                await asyncio.wait_for(future, timeout=self.ack_timeout)
                 logger.info(f"✅ ACK received for frame {frame_id}")
                 return True
             except asyncio.TimeoutError:
@@ -265,6 +307,110 @@ class CameraStreamer:
                     pass
             logger.info("▶️  Servo PWM đã kích hoạt lại.")
 
+    def _fake_confidence(self, label):
+        if label == "unknown":
+            return random.uniform(0.35, 0.55)
+        return random.uniform(0.82, 0.98)
+
+    async def _auto_stop_conveyor(self):
+        try:
+            await asyncio.sleep(self.manual_run_duration)
+            if self.conveyor:
+                self.conveyor.stop()
+        except asyncio.CancelledError:
+            raise
+
+    async def _handle_manual_command(self, command):
+        label = command["label"]
+        frame_id = self._frame_id
+        self._frame_id += 1
+        confidence = self._fake_confidence(label)
+
+        self.conveyor.start()
+
+        ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+        if not ret:
+            logger.warning("⚠️ Failed to grab manual frame.")
+            # Thử nhanh lại 1-2 frame trước khi re-init camera
+            for quick_retry in range(2):
+                await asyncio.sleep(0.2)
+                ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
+                if ret:
+                    logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
+                    break
+            if not ret:
+                logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
+                self._pause_servos()
+                if self.cap:
+                    self.cap.release()
+                await asyncio.sleep(1.0)
+                self.cap = self.init_camera()
+                if self.cap:
+                    ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+                self._resume_servos()
+
+        if not ret:
+            self.conveyor.stop()
+            raise FatalPipelineError("Camera lỗi khi chạy manual control.")
+
+        if label != "unknown":
+            await self.conveyor.sorter.activate(label)
+
+        sent_success = False
+        for retry in range(3):
+            if await self.send_result(
+                label,
+                confidence,
+                frame_id,
+                frame=frame,
+                conveyor_status="stopped",
+            ):
+                sent_success = True
+                break
+            logger.warning(f"🔄 Retry sending manual result ({retry+1}/3)...")
+            await asyncio.sleep(1)
+
+        if not sent_success:
+            logger.error("❌ Manual result was not ACKed after retries.")
+
+        if self._manual_stop_task and not self._manual_stop_task.done():
+            self._manual_stop_task.cancel()
+        self._manual_stop_task = asyncio.create_task(self._auto_stop_conveyor())
+
+    async def run_manual_control(self, cam_idx=None):
+        self.cap = self.init_camera(manual_idx=cam_idx)
+        if not self.cap:
+            logger.error("❌ Error: Could not open any camera index.")
+            raise FatalPipelineError("Không thể mở camera cho manual control.")
+
+        if self.conveyor is None:
+            self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
+
+        try:
+            while not self._stop_event.is_set():
+                if self.is_ws_closed:
+                    logger.warning("⚠️ Websocket connection lost. Breaking manual loop...")
+                    break
+
+                try:
+                    command = await asyncio.wait_for(
+                        self._manual_command_queue.get(), timeout=1.0
+                    )
+                except asyncio.TimeoutError:
+                    continue
+
+                await self._handle_manual_command(command)
+        except FatalPipelineError:
+            raise
+        except Exception as e:
+            logger.error(f"💥 Manual control error: {e}")
+        finally:
+            if self._manual_stop_task and not self._manual_stop_task.done():
+                self._manual_stop_task.cancel()
+            if self.conveyor:
+                self.conveyor.stop()
+            await self.cleanup()
+
     async def run_pipeline(self, cam_idx=None):
         """Vòng lặp: Chụp ảnh -> Phân loại (Async) -> Gửi kết quả."""
         # QUAN TRỌNG: Init camera TRƯỚC conveyor.
@@ -284,7 +430,9 @@ class CameraStreamer:
         if self.conveyor is None:
             self.conveyor = ConveyorController(sensor_active_low=self.sensor_active_low)
 
-        frame_id = 0
+        if self.classifier is None:
+            raise FatalPipelineError("Auto mode requires a model classifier.")
+
         loop = asyncio.get_running_loop()
         cam_fail_count = 0
 
@@ -313,20 +461,30 @@ class CameraStreamer:
                 ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
                 if not ret:
                     cam_fail_count += 1
-                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/3). Attempting camera RE-INIT...")
-                    self._pause_servos()
-                    self.cap.release()
-                    await asyncio.sleep(1.0)
-                    self.cap = self.init_camera(manual_idx=cam_idx)
-                    if self.cap:
-                        ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
-                    self._resume_servos()
-                    
+                    logger.warning(f"⚠️ Failed to grab frame ({cam_fail_count}/{self.max_frame_retries}).")
+                    # Thử nhanh lại 1-2 frame trước khi re-init camera
+                    for quick_retry in range(2):
+                        await asyncio.sleep(0.2)
+                        ret, frame = self._read_with_timeout(self.cap, timeout=2.0)
+                        if ret:
+                            logger.info(f"📸 Quick retry succeeded on attempt {quick_retry + 1}")
+                            cam_fail_count = 0
+                            break
+                    if not ret:
+                        logger.warning("🔄 Quick retry failed, attempting camera RE-INIT...")
+                        self._pause_servos()
+                        self.cap.release()
+                        await asyncio.sleep(1.0)
+                        self.cap = self.init_camera(manual_idx=cam_idx)
+                        if self.cap:
+                            ret, frame = self._read_with_timeout(self.cap, timeout=5.0)
+                        self._resume_servos()
+
                 if not ret:
-                    if cam_fail_count >= 3:
-                        logger.error("🛑 Camera failed 3 times consecutively. Possible hardware issue.")
+                    if cam_fail_count >= self.max_frame_retries:
+                        logger.error(f"🛑 Camera failed {self.max_frame_retries} times consecutively. Possible hardware issue.")
                         self.conveyor.stop()
-                        raise FatalPipelineError("Camera lỗi liên tục 3 lần. Kiểm tra kết nối phần cứng.")
+                        raise FatalPipelineError(f"Camera lỗi liên tục {self.max_frame_retries} lần. Kiểm tra kết nối phần cứng.")
                     
                     logger.warning("⚠️ Still failed to grab frame after re-init. Resuming cycle...")
                     self.conveyor.start()
@@ -351,7 +509,7 @@ class CameraStreamer:
                 if label:
                     sent_success = False
                     for retry in range(3):
-                        if await self.send_result(label, confidence, frame_id, frame=frame):
+                        if await self.send_result(label, confidence, self._frame_id, frame=frame):
                             sent_success = True
                             break
                         logger.warning(f"🔄 Retry sending/ACK ({retry+1}/3)...")
@@ -362,7 +520,7 @@ class CameraStreamer:
                         self.conveyor.stop()
                         raise FatalPipelineError("Không thể gửi dữ liệu sau nhiều lần thử.")
                     
-                    frame_id += 1
+                    self._frame_id += 1
 
                 # ─── BƯỚC 7: Kích hoạt servo gạt chắn nghiêng (deflector) ───
                 # Servo mở ra TRƯỚC → tạo chắn nghiêng trên băng chuyền
@@ -407,18 +565,21 @@ class CameraStreamer:
             await self.cleanup()
 
     async def cleanup(self):
-        """Giải phóng tài nguyên (Camera, Websocket, Tasks)."""
+        """Giải phóng tài nguyên (Camera, Websocket, Tasks, Executor)."""
         if hasattr(self, '_consumer_task'):
             self._consumer_task.cancel()
-            
+
+        if hasattr(self, 'executor') and self.executor:
+            self.executor.shutdown(wait=False)
+
         if self.cap:
             self.cap.release()
             self.cap = None
-            
+
         if not self.is_ws_closed:
             await self.websocket.close()
             logger.info("🔌 Websocket connection closed.")
-            
+
         logger.info("🛑 Pipeline stopped.")
 
     async def _wait_for_clear_safe(self, max_retries=3):
@@ -489,6 +650,17 @@ async def main():
         "--cam-idx", type=int, default=None, help="Force specific camera index"
     )
     parser.add_argument(
+        "--manual-control",
+        action="store_true",
+        help="Enable hidden dashboard keyboard manual control mode",
+    )
+    parser.add_argument(
+        "--manual-run-duration",
+        type=float,
+        default=2.0,
+        help="Seconds to keep conveyor running after each manual command",
+    )
+    parser.add_argument(
         "--capture-delay", type=float, default=0.2, help="Delay after stopping motor (s)"
     )
     parser.add_argument(
@@ -516,6 +688,18 @@ async def main():
         action="store_true",
         help="Keep safe-stop behavior when sensor is stuck (default)",
     )
+    parser.add_argument(
+        "--jpeg-quality", type=int, default=50,
+        help="JPEG encoding quality for images sent to server (1-100, lower = faster but less detail)",
+    )
+    parser.add_argument(
+        "--ack-timeout", type=float, default=1.5,
+        help="Timeout in seconds waiting for ACK from server (lower = faster retries)",
+    )
+    parser.add_argument(
+        "--max-frame-retries", type=int, default=3,
+        help="Max consecutive frame capture failures before camera re-init",
+    )
 
     args = parser.parse_args()
 
@@ -537,13 +721,13 @@ async def main():
     if os.environ.get("TESTING"):
         SERVER = "ws://127.0.0.1:8765/ws/pi"
 
-    if not os.path.exists(MODEL):
+    if not args.manual_control and not os.path.exists(MODEL):
         logger.error(f"❌ Model file not found at {MODEL}")
         logger.info("💡 Please ensure the model exists or provide path with --model")
         return
 
     streamer = CameraStreamer(
-        model_path=MODEL,
+        model_path=None if args.manual_control else MODEL,
         server_url=SERVER,
         device_id=args.device_id,
         resolution=(res_w, res_h),
@@ -553,6 +737,11 @@ async def main():
         sensor_bypass_timeout=args.bypass_timeout,
         sensor_active_low=not args.sensor_active_high,
         sensor_bypass_enabled=args.enable_sensor_bypass and not args.disable_sensor_bypass,
+        manual_control=args.manual_control,
+        manual_run_duration=args.manual_run_duration,
+        jpeg_quality=args.jpeg_quality,
+        ack_timeout=args.ack_timeout,
+        max_frame_retries=args.max_frame_retries,
     )
 
     try:
@@ -560,7 +749,10 @@ async def main():
             try:
                 if await streamer.connect():
                     try:
-                        await streamer.run_pipeline(cam_idx=args.cam_idx)
+                        if args.manual_control:
+                            await streamer.run_manual_control(cam_idx=args.cam_idx)
+                        else:
+                            await streamer.run_pipeline(cam_idx=args.cam_idx)
                     except FatalPipelineError as e:
                         logger.critical(f"🚨 FATAL: System halted for safety: {e}")
                         # Exit with non-zero to signal systemd not to auto-restart if configured so

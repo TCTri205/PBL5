@@ -5,13 +5,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const liveFeed = document.getElementById('live-feed');
     const noFeedOverlay = document.getElementById('no-feed-overlay');
     const deviceIdBadge = document.getElementById('device-id-badge');
-    const conveyorStatus = document.getElementById('conveyor-status');
-    
+
     const fruitIcon = document.getElementById('fruit-icon');
     const currentLabel = document.getElementById('current-label');
     const confidenceBar = document.getElementById('confidence-bar');
     const confidenceText = document.getElementById('confidence-text');
-    
+
     const metaFrameId = document.getElementById('meta-frame-id');
     const metaLatency = document.getElementById('meta-latency');
     const metaTime = document.getElementById('meta-time');
@@ -34,6 +33,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let stats = { cam: 0, chanh: 0, quyt: 0, total: 0 };
     let history = [];
     const MAX_HISTORY = 50;
+    const COMMAND_DEBOUNCE_MS = 300;
+    let lastCommandAt = 0;
 
     const fruitConfig = {
         'cam': { name: 'CAM (Orange)', icon: '🍊', color: '#f97316' },
@@ -42,11 +43,27 @@ document.addEventListener('DOMContentLoaded', () => {
         'unknown': { name: 'Không xác định', icon: '❓', color: '#6b7280' }
     };
 
+    const manualKeyMap = {
+        '1': 'cam',
+        '2': 'chanh',
+        '3': 'quyt',
+        '4': 'unknown',
+        'ArrowLeft': 'cam',
+        'ArrowDown': 'chanh',
+        'ArrowRight': 'quyt',
+        'ArrowUp': 'unknown'
+    };
+
+    // Connection retry tracking
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_ATTEMPTS = 10;
+    const BASE_RECONNECT_DELAY = 3000; // 3 seconds
+
     // WebSocket Initialization
     function connect() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
-        
+
         console.log(`Connecting to ${wsUrl}...`);
         socket = new WebSocket(wsUrl);
 
@@ -54,6 +71,8 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('Connected to Server');
             statusIndicator.classList.add('connected');
             statusText.textContent = 'CONNECTED';
+            // Reset reconnect attempts on successful connection
+            reconnectAttempts = 0;
         };
 
         socket.onmessage = (event) => {
@@ -69,8 +88,17 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('Disconnected from Server');
             statusIndicator.classList.remove('connected');
             statusText.textContent = 'DISCONNECTED';
-            // Auto-reconnect after 3 seconds
-            setTimeout(connect, 3000);
+
+            // Exponential backoff with max attempts
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), 30000); // Max 30 seconds
+                reconnectAttempts++;
+                console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+                setTimeout(connect, delay);
+            } else {
+                statusText.textContent = 'MAX RECONNECT ATTEMPTS REACHED';
+                console.error('Max reconnection attempts reached. Please refresh the page.');
+            }
         };
 
         socket.onerror = (err) => {
@@ -81,8 +109,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // UI Updates
     function updateUI(data) {
-        const { device_id, frame_id, timestamp, label, confidence, conveyor_status, image } = data;
-        
+        const { device_id, frame_id, timestamp, label, confidence, image } = data;
+
         if (!label) {
             console.warn('Received data without label:', data);
             return;
@@ -98,9 +126,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Update Header/Meta
         deviceIdBadge.textContent = device_id || 'Unknown';
-        conveyorStatus.textContent = conveyor_status === 'stopped' ? '⏹ Stopped' : '▶ Running';
-        conveyorStatus.className = 'value ' + (conveyor_status === 'stopped' ? 'status-active' : '');
-        
+
         metaFrameId.textContent = `#${frame_id}`;
         
         const now = Date.now();
@@ -210,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modalClose.onclick = () => modal.style.display = "none";
     }
     window.onclick = (event) => {
-        if (event.target == modal) modal.style.display = "none";
+        if (event.target === modal) modal.style.display = "none";
     };
 
     // Actions
@@ -227,6 +253,32 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
     }
+
+    document.addEventListener('keydown', (event) => {
+        // Check socket connection first for safety
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        
+        // Then check event.target to avoid potential null reference
+        const tagName = event.target && event.target.tagName ? event.target.tagName.toLowerCase() : '';
+        if (tagName === 'input' || tagName === 'textarea' || event.target.isContentEditable) return;
+        
+        const label = manualKeyMap[event.key];
+        if (!label || event.repeat) return;
+        if (['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'].includes(event.key)) {
+            event.preventDefault();
+        }
+
+        const now = Date.now();
+        if (now - lastCommandAt < COMMAND_DEBOUNCE_MS) return;
+        lastCommandAt = now;
+
+        socket.send(JSON.stringify({
+            type: 'manual_command',
+            command_id: `${now}-${Math.random().toString(36).slice(2, 10)}`,
+            label,
+            source_key: event.key
+        }));
+    });
 
     // Start
     connect();
