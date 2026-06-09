@@ -51,9 +51,9 @@ class ServoSorter:
 
     # Mapping: label -> (GPIO pin, delay, active_angle)
     DEFAULT_CONFIG = {
-        "cam":   (5, 5.0, 45),    # Servo 1: 5s, gạt -45 độ
-        "chanh": (6, 8.0, 45),    # Servo 2: 8s, gạt -45 độ
-        "quyt":  (26, 11.0, 45),  # Servo 3: 11s, gạt -45 độ
+        "cam":   (5, 5.0, -45),    # Servo 1: 5s, gạt -45 độ
+        "chanh": (6, 8.0, -45),    # Servo 2: 8s, gạt -45 độ
+        "quyt":  (26, 11.0, -45),  # Servo 3: 11s, gạt -45 độ
     }
 
     def __init__(self, config=None):
