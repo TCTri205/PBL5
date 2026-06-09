@@ -124,8 +124,8 @@ Inference time: 125.30 ms
 
 ```bash
 # Chạy inference trên Raspberry Pi
-cd ~/pbl5_project/repo
-source venv/bin/activate
+cd ~/PBL5/repo
+source ~/pbl5_venv/bin/activate
 python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_images/cam_01.jpg
 ```
 

@@ -105,12 +105,6 @@ class CameraStreamer:
         self._manual_command_queue = asyncio.Queue()
         self._manual_stop_task = None
         self._frame_id = 0
-        self._sorting_task_running = False
-
-        # Pipeline Queues
-        self._inference_queue = asyncio.Queue(maxsize=5) # Giới hạn backlog
-        self._sorting_queue = asyncio.Queue(maxsize=10)
-        self._network_queue = asyncio.Queue(maxsize=10) # Quan trọng: Giới hạn để không tràn RAM khi mất mạng lâu
 
         # QUAN TRỌNG: Hoãn khởi tạo ConveyorController (servo software PWM
         # gây nhiễu USB isochronous transfer, làm camera DV20 không stream được).
@@ -289,102 +283,7 @@ class CameraStreamer:
                 logger.error(f"💥 Reconnect worker error: {e}")
                 await asyncio.sleep(10)
 
-    async def _inference_worker(self):
-        """Worker chạy model phân loại."""
-        logger.info("🧠 Inference worker started.")
-        loop = asyncio.get_running_loop()
-        while not self._stop_event.is_set():
-            try:
-                # Đợi dữ liệu với timeout (W3)
-                try:
-                    item = await asyncio.wait_for(self._inference_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
 
-                frame = item["frame"]
-                frame_id = item["frame_id"]
-
-                # Null check for safety (C2)
-                if self.classifier is None:
-                    logger.error("❌ Classifier not available in inference worker!")
-                    break
-
-                # Chạy inference trên thread pool và đo thời gian (E1)
-                t0 = time.perf_counter()
-                label, confidence = await loop.run_in_executor(
-                    self.executor,
-                    self.classifier.predict,
-                    frame,
-                    self.confidence_thresh,
-                )
-                inference_ms = (time.perf_counter() - t0) * 1000
-                logger.info(f"🧠 Inference: {label.upper()} ({confidence:.1%}) in {inference_ms:.1f}ms")
-
-                # Đẩy sang Sorter và Network (C1: pass conveyor_status="running")
-                if label is None:
-                    label = "unknown"
-                
-                # 1. Gửi lệnh cho Servo (Quan trọng nhất - KHÔNG CHỜ MẠNG)
-                await self._sorting_queue.put({"label": label, "confidence": confidence, "frame_id": frame_id})
-                
-                # 2. Gửi dữ liệu lên Network (Dùng put_nowait để không block nếu mạng lag)
-                try:
-                    # Encode JPEG ngay tại đây để tiết kiệm RAM trong Queue
-                    encoded_image = self._encode_frame(frame)
-                    
-                    self._network_queue.put_nowait({
-                        "label": label, 
-                        "confidence": confidence, 
-                        "frame_id": frame_id, 
-                        "encoded_image": encoded_image, 
-                        "conveyor_status": "running"
-                    })
-                except asyncio.QueueFull:
-                    logger.warning(f"📡 Network Queue FULL! Dropping frame {frame_id} from streaming, but sorting continues.")
-                except Exception as e:
-                    logger.error(f"⚠️ Error preparing network payload: {e}")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"💥 Inference worker error: {e}")
-            finally:
-                try:
-                    self._inference_queue.task_done()
-                except Exception:
-                    pass
-            
-        logger.info("🧠 Inference worker stopped.")
-
-    async def _sorting_worker(self):
-        """Worker điều khiển servo gạt quả (Không phụ thuộc vào mạng)."""
-        logger.info("🔧 Sorting worker started.")
-        while not self._stop_event.is_set():
-            try:
-                # Đợi dữ liệu với timeout (W3)
-                try:
-                    result = await asyncio.wait_for(self._sorting_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    continue
-
-                label = result["label"]
-                frame_id = result["frame_id"]
-                
-                if label and label != "unknown":
-                    # Kích hoạt servo ngay lập tức khi có kết quả
-                    await self.conveyor.sorter.activate(label)
-                    logger.info(f"✅ ACTION: Sorted {label.upper()} (Frame {frame_id})")
-                else:
-                    logger.info(f"⏭️  ACTION: Passed (Unknown/Low confidence) (Frame {frame_id})")
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"💥 Sorting worker error: {e}")
-            finally:
-                try:
-                    self._sorting_queue.task_done()
-                except Exception:
-                    pass
-        logger.info("🔧 Sorting worker stopped.")
 
     # ─── Background Camera Reader ─────────────────────────────────────
 
@@ -540,8 +439,10 @@ class CameraStreamer:
         ret, frame = self.get_latest_frame()
         if not ret:
             logger.warning("⚠️ Failed to grab manual frame.")
-            # Camera worker will handle re-init if needed, but for manual 
-            # we just notify that capture failed.
+            if self._manual_stop_task and not self._manual_stop_task.done():
+                self._manual_stop_task.cancel()
+            self._manual_stop_task = asyncio.create_task(self._auto_stop_conveyor())
+            return
         
         if label != "unknown" and ret:
             await self.conveyor.sorter.activate(label)
@@ -662,7 +563,7 @@ class CameraStreamer:
                 self.conveyor.disable_sensor()
 
                 # *** Bắt đầu đếm chu kỳ 10 giây ngay từ lúc phát hiện ***
-                cycle_start = asyncio.get_event_loop().time()
+                cycle_start = asyncio.get_running_loop().time()
                 logger.info("🔔 Phát hiện vật thể! Bắt đầu chu kỳ 10s.")
 
                 # Chờ vật thể ổn định trước khi chụp ảnh theo cấu hình --capture-delay
@@ -743,7 +644,7 @@ class CameraStreamer:
                 self.conveyor.start()
 
                 # ─── BƯỚC 7: Chờ hết chu kỳ 10 giây ───
-                elapsed = asyncio.get_event_loop().time() - cycle_start
+                elapsed = asyncio.get_running_loop().time() - cycle_start
                 remaining = CYCLE_DURATION - elapsed
                 if remaining > 0:
                     logger.info(f"⏱️ Băng chuyền chạy, còn {remaining:.1f}s...")

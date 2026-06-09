@@ -25,10 +25,14 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.mock_classifier_instance = mock_classifier.return_value
         self.mock_conveyor_instance = mock_conveyor.return_value
         self.mock_conveyor_instance.sorter.activate = AsyncMock(return_value=None)
+        self.mock_conveyor_instance.enable_sensor = AsyncMock()
+        self.mock_conveyor_instance.wait_for_object = AsyncMock(return_value=True)
+        self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=True)
         self.server_url = "ws://localhost:8765"
         self.streamer = CameraStreamer(
             model_path="dummy.onnx", server_url=self.server_url
         )
+        self.streamer._reconnect_worker = AsyncMock()
 
     @patch("websockets.connect", new_callable=AsyncMock)
     async def test_connect_success(self, mock_connect):
@@ -60,8 +64,8 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         ack_message = json.dumps({"status": "success", "ack_frame": 123})
         mock_ws.__aiter__.return_value = [ack_message].__iter__()
 
-        # Gọi send_result (nó sẽ đợi ACK)
-        success = await self.streamer.send_result("cam", 0.95, 123)
+        # Gọi _send_payload (nó sẽ đợi ACK)
+        success = await self.streamer._send_payload("cam", 0.95, 123)
         self.assertTrue(success)
         
         mock_ws.send.assert_called_once()
@@ -82,38 +86,57 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         mock_cap = MagicMock()
         mock_video_capture.return_value = mock_cap
         mock_cap.isOpened.return_value = True
+        mock_cap.read.return_value = (True, np.zeros((480, 640, 3), dtype=np.uint8))
+        
+        # Setup websocket mock with ACK trigger
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        
+        async def mock_send(message):
+            data = json.loads(message)
+            fid = data["frame_id"]
+            if fid in self.streamer._acks:
+                self.streamer._acks[fid].set_result(True)
+                
+        mock_ws.send = AsyncMock(side_effect=mock_send)
+        mock_connect.return_value = mock_ws
+        self.streamer.websocket = mock_ws
+        
         # Simulate 2 frames, then stop
         self.mock_classifier_instance.predict.return_value = ("chanh", 0.8)
 
-        # Use a side effect to stop the pipeline after 2 frames
+        # Use a side effect on get_latest_frame to stop the pipeline after 2 frames
         frame_count = 0
-        def read_side_effect():
+        def get_latest_frame_side_effect():
             nonlocal frame_count
             frame_count += 1
             if frame_count >= 3:
                 self.streamer._stop_event.set()
             return (True, np.zeros((480, 640, 3), dtype=np.uint8))
         
-        mock_cap.read.side_effect = read_side_effect
+        self.streamer.get_latest_frame = MagicMock(side_effect=get_latest_frame_side_effect)
 
         # Simulate sensor detecting object, then clearing
         self.mock_conveyor_instance.wait_for_object = AsyncMock(return_value=True)
         self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=True)
 
-        # Patch asyncio.sleep and wait_for (ACK) to speed up test
-        with patch("asyncio.sleep", AsyncMock()), \
-             patch("asyncio.wait_for", AsyncMock(return_value=True)):
+        real_sleep = asyncio.sleep
+        async def mock_sleep(x):
+            await real_sleep(0.001)
+
+        # Patch asyncio.sleep to speed up test
+        with patch("asyncio.sleep", mock_sleep):
             await self.streamer.run_pipeline()
+            await self.streamer.cleanup()
 
         self.assertEqual(mock_ws.send.call_count, 2)
         mock_cap.release.assert_called_once()
         self.mock_conveyor_instance.start.assert_called()
-        self.mock_conveyor_instance.stop.assert_called()
 
     @patch("cv2.VideoCapture")
     @patch("websockets.connect", new_callable=AsyncMock)
     async def test_fatal_error_stops_system(self, mock_connect, mock_video_capture):
-        """Kiểm tra xem FatalPipelineError có làm dừng toàn bộ hệ thống không."""
+        """Kiểm tra xem FatalPipelineError có làm dừng toàn bộ hệ thống không khi camera lỗi liên tiếp."""
         from cam_stream import FatalPipelineError
         
         # Setup mocks
@@ -125,20 +148,18 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         mock_cap = MagicMock()
         mock_video_capture.return_value = mock_cap
         mock_cap.isOpened.return_value = True
-        
-        # Mô phỏng sensor bị kẹt (wait_until_clear trả về False sau retries)
-        self.mock_conveyor_instance.wait_for_object = AsyncMock(return_value=True)
-        self.mock_conveyor_instance.wait_until_clear = AsyncMock(return_value=False)
-        
-        # Mock classifier và camera
-        self.mock_classifier_instance.predict.return_value = ("chanh", 0.8)
         mock_cap.read.return_value = (True, np.zeros((480, 640, 3), dtype=np.uint8))
         
-        # Patch sleep và wait_for
-        with patch("asyncio.sleep", AsyncMock()), \
-             patch("asyncio.wait_for", AsyncMock(return_value=True)):
-            
-            # Kỳ vọng FatalPipelineError ném ra khi sensor kẹt
+        # Setup camera failure
+        self.streamer.max_frame_retries = 1
+        self.streamer.get_latest_frame = MagicMock(return_value=(False, None))
+        self.streamer._network_worker = AsyncMock()  # Mock network worker to avoid background activities
+        
+        self.mock_conveyor_instance.wait_for_object = AsyncMock(return_value=True)
+        
+        # Patch sleep
+        with patch("asyncio.sleep", AsyncMock()):
+            # Kỳ vọng FatalPipelineError ném ra khi camera lỗi liên tiếp
             with self.assertRaises(FatalPipelineError):
                 await self.streamer.run_pipeline()
             
@@ -222,6 +243,8 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.streamer.cap.read.return_value = (True, np.zeros((100, 100, 3), dtype=np.uint8))
         
         command = {"label": "chanh", "command_id": "c1", "source_key": "2"}
+        self.streamer._bg_ret = True
+        self.streamer._bg_frame = np.zeros((100, 100, 3), dtype=np.uint8)
         
         with patch("asyncio.wait_for", AsyncMock(return_value=True)):
             await self.streamer._handle_manual_command(command)
@@ -251,6 +274,8 @@ class TestCameraStreamer(unittest.IsolatedAsyncioTestCase):
         self.streamer.cap.read.return_value = (True, np.zeros((100, 100, 3), dtype=np.uint8))
 
         command = {"label": "unknown", "command_id": "c2", "source_key": "4"}
+        self.streamer._bg_ret = True
+        self.streamer._bg_frame = np.zeros((100, 100, 3), dtype=np.uint8)
 
         with patch("asyncio.wait_for", AsyncMock(return_value=True)):
             await self.streamer._handle_manual_command(command)

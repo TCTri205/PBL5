@@ -26,7 +26,7 @@ Chúng tôi đã chuẩn bị các script khởi động nhanh tại thư mục 
 ### 1. Chạy với ảnh tĩnh (Kiểm tra Model)
 
 ```bash
-source venv/bin/activate
+source ~/pbl5_venv/bin/activate
 python pi_edge/fruit_classifier.py pi_edge/model/best.onnx test_image.jpg
 ```
 

@@ -1,0 +1,24 @@
+[stderr] INFO:     Started server process [2324]
+[stderr] INFO:     Waiting for application startup.
+[stderr] INFO:     Application startup complete.
+[stderr] INFO:     Uvicorn running on http://127.0.0.1:8765 (Press CTRL+C to quit)
+INFO:     127.0.0.1:54775 - "GET /health HTTP/1.1" 200 OK
+[stderr] INFO:     ('127.0.0.1', 54776) - "WebSocket /ws" [accepted]
+[stderr] 2026-06-09 21:16:13 INFO     [codeboarding_pro.ws.server:226] WebSocket connected: session 57a2541d-b92d-4c3e-af04-adf1d8a3ddc4
+[stderr] INFO:     connection open
+[stderr] 2026-06-09 21:16:15 INFO     [codeboarding_pro.lsp.bootstrap:56] LSP startup attempt 1/3
+[stderr] 2026-06-09 21:16:15 INFO     [codeboarding_pro.session:185] Session 57a2541d-b92d-4c3e-af04-adf1d8a3ddc4 initialized: repo=D:\HOC_DAI_HOC\PBL5, project=PBL5, output=D:\HOC_DAI_HOC\PBL5\.codeboarding
+[stderr] 2026-06-09 21:16:38 WARNING  [static_analyzer:60] Unsupported programming language: CSS. Skipping.
+[stderr] 2026-06-09 21:16:38 WARNING  [static_analyzer:60] Unsupported programming language: HTML. Skipping.
+[stderr] 2026-06-09 21:16:39 WARNING  [static_analyzer.typescript_config_scanner:59] No TypeScript configuration files found in D:\HOC_DAI_HOC\PBL5
+[stderr] 2026-06-09 21:16:39 INFO     [static_analyzer:106] No TypeScript config files found, using repository root for JavaScript
+[stderr] 2026-06-09 21:16:39 WARNING  [static_analyzer:60] Unsupported programming language: Jupyter Notebooks. Skipping.
+[stderr] 2026-06-09 21:16:39 INFO     [static_analyzer:221] Starting engine LSP client for JavaScript at D:\HOC_DAI_HOC\PBL5
+[stderr] 2026-06-09 21:16:44 INFO     [static_analyzer:246] JavaScript LSP start: 4.8s
+[stderr] 2026-06-09 21:16:44 INFO     [static_analyzer:221] Starting engine LSP client for Python at D:\HOC_DAI_HOC\PBL5
+[stderr] 2026-06-09 21:16:49 INFO     [static_analyzer:246] Python LSP start: 5.0s
+[stderr] 2026-06-09 21:16:49 INFO     [codeboarding_pro.file_monitor:106] FileMonitor started for D:\HOC_DAI_HOC\PBL5
+[stderr] 2026-06-09 21:16:49 INFO     [codeboarding_pro.session:203] Session 57a2541d-b92d-4c3e-af04-adf1d8a3ddc4: FileMonitor activated
+[stderr] 2026-06-09 21:16:49 INFO     [codeboarding_pro.head_watcher:46] HeadWatcher started on D:\HOC_DAI_HOC\PBL5\.git\HEAD
+[stderr] 2026-06-09 21:16:49 INFO     [codeboarding_pro.session:248] Session 57a2541d-b92d-4c3e-af04-adf1d8a3ddc4: LSP wiring complete
+[stderr] 2026-06-09 21:16:49 INFO     [codeboarding_pro.lsp.bootstrap:67] LSP clients started successfully (attempt 1)

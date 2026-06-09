@@ -61,12 +61,13 @@ def check_servos():
         import time
         pins = [5, 6, 26]
         labels = ["Cam (5)", "Chanh (6)", "Quyt (26)"]
+        all_ok = True
         
         for i, pin in enumerate(pins):
             try:
                 s = AngularServo(pin, min_pulse_width=0.0005, max_pulse_width=0.0025)
-                logger.info(f"Testing Servo {labels[i]} -> -60 degrees...")
-                s.angle = -60
+                logger.info(f"Testing Servo {labels[i]} -> -45 degrees...")
+                s.angle = -45
                 time.sleep(0.5)
                 s.angle = 0
                 time.sleep(0.5)
@@ -74,7 +75,8 @@ def check_servos():
                 logger.info(f"✅ Servo {labels[i]} OK.")
             except Exception as e:
                 logger.error(f"❌ Servo {labels[i]} failed: {e}")
-        return True
+                all_ok = False
+        return all_ok
     except ImportError:
         logger.warning("⚠️ gpiozero not found, skipping servo hardware test.")
         return False

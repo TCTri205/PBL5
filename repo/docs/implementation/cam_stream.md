@@ -24,7 +24,7 @@ Trong file `cam_stream.py`, bạn cần lưu ý các biến sau:
 
 ```python
 # Địa chỉ server (Laptop)
-SERVER = "ws://<LAPTOP_IP>:8765"
+SERVER = "ws://<LAPTOP_IP>:<PORT>"  # PORT ví dụ: 8888 hoặc 8765
 
 # Ngưỡng tin cậy để gửi kết quả
 confidence_thresh = 0.5 
@@ -44,8 +44,8 @@ resolution = (640, 480)
 2. **Trên Raspberry Pi**:
 
    ```bash
-   source venv/bin/activate
-   python start_pi.py --server <IP_LAPTOP>
+   source ~/pbl5_venv/bin/activate
+   python start_pi.py --server <IP_LAPTOP> --port <PORT>
    ```
 
 ## 📊 Định dạng dữ liệu gửi đi (JSON)

@@ -77,8 +77,8 @@ graph TD
 
 ```bash
 # Đảm bảo model best.onnx nằm trong repo/pi_edge/model/
-cd ~/pbl5_project/repo
-source venv/bin/activate
+cd ~/PBL5/repo
+source ~/pbl5_venv/bin/activate
 pip install -r requirements.txt
 
 # Chạy thử nghiệm phân loại ảnh tĩnh

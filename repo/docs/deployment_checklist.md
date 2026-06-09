@@ -11,7 +11,7 @@
 ## 🍓 2. Raspberry Pi OS & Environment
 
 - [x] Sử dụng **Raspberry Pi OS 64-bit Lite**.
-- [x] SSH đã được enable: `ssh <user>@pbl5-pi.local`.
+- [x] SSH đã được enable: `ssh <user>@pbl5.local`.
 - [x] Môi trường ảo (venv) đã được kích hoạt.
 - [x] Cài đặt dependencies từ file tổng hợp: `pip install -r requirements.txt`.
 
@@ -24,7 +24,7 @@
 ## 🌐 4. Kết nối mạng & WebSocket
 
 - [x] Pi và Laptop đã kết nối chung một mạng LAN/WiFi.
-- [x] Laptop đã mở port firewall **8765** (Inbound).
+- [x] Laptop đã mở port firewall **8765** hoặc **8888** (Inbound).
 
 ## ⚙️ 5. Cấu hình Runtime (Optimization)
 

@@ -8,10 +8,10 @@ Luôn sử dụng `venv` để tránh xung đột thư viện hệ thống:
 
 ```bash
 # Tạo
-python -m venv venv
+python -m venv ~/pbl5_venv
 
 # Kích hoạt
-source venv/bin/activate
+source ~/pbl5_venv/bin/activate
 
 # Cài đặt từ file requirements (nếu có)
 pip install -r requirements.txt

@@ -44,15 +44,16 @@ except ImportError:
         raise
 
 import asyncio
+import time
 
 class ServoSorter:
     """Điều khiển servo phân loại trái cây (MG996R)."""
 
     # Mapping: label -> (GPIO pin, delay, active_angle)
     DEFAULT_CONFIG = {
-        "cam":   (5, 5.0, -60),    # Servo 1: 5s, gạt -60 độ
-        "chanh": (6, 8.0, -60),    # Servo 2: 8s, gạt -60 độ
-        "quyt":  (26, 11.0, -60),  # Servo 3: 11s, gạt -60 độ
+        "cam":   (5, 5.0, -45),    # Servo 1: 5s, gạt -45 độ
+        "chanh": (6, 8.0, -45),    # Servo 2: 8s, gạt -45 độ
+        "quyt":  (26, 11.0, -45),  # Servo 3: 11s, gạt -45 độ
     }
 
     def __init__(self, config=None):
@@ -77,7 +78,6 @@ class ServoSorter:
                 self.delays[label] = delay
                 self.active_angles[label] = active_angle
                 self.servos[label].angle = 0
-                import time
                 time.sleep(0.2)  # Delay nhỏ để tránh sụt áp đồng loạt khi khởi tạo
             except Exception as e:
                 logger.error(f"❌ Không thể khởi tạo servo cho {label} trên pin {pin}: {e}")
@@ -91,7 +91,7 @@ class ServoSorter:
             active_angle = self.active_angles.get(label, -60)
             
             # Tính toán thời điểm quả sẽ thoát khỏi vùng gạt
-            arrival_time = asyncio.get_event_loop().time() + travel_delay
+            arrival_time = asyncio.get_running_loop().time() + travel_delay
             close_time = arrival_time + hold_duration
             
             # Cập nhật deadline xa nhất cho servo này (để xử lý nhiều quả cùng loại nối đuôi)
@@ -121,14 +121,14 @@ class ServoSorter:
             
             # 3. Chờ cho đến khi vượt qua deadline (có thể đã được kéo dài bởi quả sau)
             while True:
-                now = asyncio.get_event_loop().time()
+                now = asyncio.get_running_loop().time()
                 remaining = self._deadlines.get(label, 0) - now
                 if remaining <= 0:
                     break
                 await asyncio.sleep(remaining)
             
             # 4. Thu về (chỉ khi không có quả nào khác đang chờ deadline mới)
-            if asyncio.get_event_loop().time() >= self._deadlines.get(label, 0):
+            if asyncio.get_running_loop().time() >= self._deadlines.get(label, 0):
                 logger.info(f"🔄 ACTION: Thu Servo {label.upper()} về vị trí 0°.")
                 self.servos[label].angle = 0
             

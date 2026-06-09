@@ -18,7 +18,7 @@ Sử dụng phần mềm **Raspberry Pi Imager** để nạp hệ điều hành.
 4. **BẤM NEXT ĐỂ VÀO BẢNG EDIT SETTINGS (OS Customisation)**:
    Chọn **EDIT SETTINGS** và thiết lập:
    - **Tab General**:
-     - **Set hostname**: `pbl5-pi` (Chỉ điền tên, hệ thống sẽ tự thêm đuôi `.local` để bạn gọi máy).
+     - **Set hostname**: `pbl5` (Chỉ điền tên, hệ thống sẽ tự thêm đuôi `.local` để bạn gọi máy).
      - **Set username and password**: User là `pi`, mật khẩu là `123456`.
      - **Configure wireless LAN**: Nhập SSID (VD: `Cong Tam-5G`) và Mật khẩu Wifi nhà bạn.
        - > [!IMPORTANT]
@@ -42,7 +42,7 @@ Sử dụng phần mềm **Raspberry Pi Imager** để nạp hệ điều hành.
 Cắm USB vào Pi, cấp nguồn và đợi khoảng 2-3 phút để máy khởi động và nhận Wifi. Trên Laptop, mở Terminal hoặc PowerShell:
 
 ```bash
-ssh pi@pbl5-pi.local
+ssh pi@pbl5.local
 ```
 
 *Nhập mật khẩu là `123456` (hoặc mật khẩu bạn đã đặt). Nếu được hỏi "Are you sure...", gõ `yes`.*
@@ -113,12 +113,12 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y git dphys-swapfile libopenblas-dev libopenjp2-7 libtiff6 libjpeg-dev libcap-dev libgomp1
 
 # Tải dự án
-git clone https://github.com/TCTri205/PBL5.git ~/pbl5_project
-cd ~/pbl5_project/repo
+git clone https://github.com/TCTri205/PBL5.git ~/PBL5
+cd ~/PBL5/repo
 
 # Tạo và kích hoạt môi trường ảo (Bắt buộc trên Bookworm)
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv ~/pbl5_venv
+source ~/pbl5_venv/bin/activate
 
 # Cài đặt các gói Python
 pip install --upgrade pip
@@ -129,11 +129,11 @@ pip install -r requirements.txt
 
 Để Pi có thể nhận diện trái cây, bạn cần copy file model đã huấn luyện từ Laptop/Colab sang Pi.
 
-- **Vị trí**: `~/pbl5_project/repo/pi_edge/model/best.onnx`
+- **Vị trí**: `~/PBL5/repo/pi_edge/model/best.onnx`
 - **Cách copy (từ máy tính)**:
 
   ```bash
-  scp best.onnx pi@pbl5-pi.local:~/pbl5_project/repo/pi_edge/model/
+  scp best.onnx pi@pbl5.local:~/PBL5/repo/pi_edge/model/
   ```
 
 ---
@@ -179,16 +179,16 @@ sudo dphys-swapfile swapon
    ```ini
    [Service]
    User=pi
-   WorkingDirectory=/home/pi/pbl5_project/repo
+   WorkingDirectory=/home/pi/PBL5/repo
    # Thay <IP_LAPTOP> bằng địa chỉ IP thật của máy chủ (VD: 192.168.1.15)
-   ExecStart=/home/pi/pbl5_project/repo/venv/bin/python /home/pi/pbl5_project/repo/start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
+   ExecStart=/home/pi/pbl5_venv/bin/python /home/pi/PBL5/repo/start_pi.py --server <IP_LAPTOP> --device-id "Gate-01"
    ```
 
 2. **Cài đặt service vào hệ thống**:
 
 ```bash
 # Copy file vào thư mục hệ thống (Chạy trên Pi)
-sudo cp ~/pbl5_project/repo/pi_edge/deployment/pbl5_pi.service /etc/systemd/system/
+sudo cp ~/PBL5/repo/pi_edge/deployment/pbl5_pi.service /etc/systemd/system/
 
 # Kích hoạt
 sudo systemctl daemon-reload
@@ -230,7 +230,7 @@ sudo systemctl status pbl5_pi.service
    python start_server.py
    ```
 
-5. Truy cập `http://localhost:8765` để mở Dashboard.
+5. Truy cập `http://localhost:8765` (hoặc cổng bạn đã cấu hình qua `--port`, ví dụ: `http://localhost:8888`) để mở Dashboard.
 
 ### Bước 2: Chuẩn bị trên Raspberry Pi (Edge)
 
