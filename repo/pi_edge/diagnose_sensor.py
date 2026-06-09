@@ -1,6 +1,6 @@
 """
 PBL5 - Script chan doan cam bien hong ngoai E18-D80NK
-Chay tren Raspberry Pi: python pi_edge/test_sensor.py
+Chay tren Raspberry Pi: python pi_edge/diagnose_sensor.py
 
 Script nay kiem tra:
 1. GPIO 17 (mac dinh) voi nhieu cau hinh pull_up khac nhau
@@ -9,7 +9,7 @@ Script nay kiem tra:
 import time
 import sys
 
-def test_single_pin(pin, pull_up_mode):
+def diagnose_single_pin(pin, pull_up_mode):
     """Test mot chan GPIO voi pull_up cu the."""
     from gpiozero import DigitalInputDevice
     try:
@@ -25,7 +25,7 @@ def test_single_pin(pin, pull_up_mode):
         return None, str(e)
 
 
-def test_raw_pin(pin):
+def diagnose_raw_pin(pin):
     """Doc trang thai chan GPIO truc tiep qua RPi.GPIO (khong qua gpiozero)."""
     try:
         import RPi.GPIO as GPIO
@@ -126,7 +126,7 @@ def main():
     
     # === Buoc 1: Test GPIO 17 voi RPi.GPIO (raw) ===
     print("\n--- Buoc 1: Doc RAW GPIO 17 (qua RPi.GPIO) ---")
-    result = test_raw_pin(17)
+    result = diagnose_raw_pin(17)
     if result[0] is not None:
         no_pull, pull_up, pull_down = result
         print(f"  GPIO 17 (khong pull):  {'HIGH (1)' if no_pull else 'LOW (0)'}")
@@ -146,7 +146,7 @@ def main():
     
     # === Buoc 2: Test GPIO 17 voi gpiozero ===
     print("\n--- Buoc 2: Doc GPIO 17 (qua gpiozero, pull_up=True) ---")
-    avg, readings = test_single_pin(17, True)
+    avg, readings = diagnose_single_pin(17, True)
     if avg is not None:
         print(f"  5 lan doc: {readings}")
         print(f"  Trung binh: {avg}")
