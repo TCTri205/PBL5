@@ -60,7 +60,7 @@ except ImportError:
 DEFAULT_SERVOS = {
     "1": {"name": "Cam (Mang 1)", "pin": 5, "active_angle": -45},
     "2": {"name": "Chanh (Mang 2)", "pin": 6, "active_angle": -45},
-    "3": {"name": "Quyt (Mang 3)", "pin": 16, "active_angle": -45}
+    "3": {"name": "Quyt (Mang 3)", "pin": 12, "active_angle": -45}
 }
 
 def init_servo(pin):

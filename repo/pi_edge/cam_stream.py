@@ -855,7 +855,7 @@ async def main():
     SORTER_CONFIG = {
         "cam":   (5, args.delay_cam, -60),
         "chanh": (6, args.delay_chanh, -60),
-        "quyt":  (16, args.delay_quyt, -60),
+        "quyt":  (12, args.delay_quyt, -60),
     }
 
     streamer = CameraStreamer(
