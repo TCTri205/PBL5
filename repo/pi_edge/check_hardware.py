@@ -55,12 +55,12 @@ def check_camera():
     return False
 
 def check_servos():
-    logger.info("🔍 Checking servos (GPIO 5, 6, 26)...")
+    logger.info("🔍 Checking servos (GPIO 5, 6, 16)...")
     try:
         from gpiozero import AngularServo
         import time
-        pins = [5, 6, 26]
-        labels = ["Cam (5)", "Chanh (6)", "Quyt (26)"]
+        pins = [5, 6, 16]
+        labels = ["Cam (5)", "Chanh (6)", "Quyt (16)"]
         all_ok = True
         
         for i, pin in enumerate(pins):
@@ -110,7 +110,7 @@ def main():
     print(f"Dependencies: {'OK' if deps else 'FAIL'}")
     print(f"Model File:   {'OK' if model else 'MISSING'}")
     print(f"Camera:       {'OK' if cam else 'NOT FOUND'}")
-    print(f"Servos (5,6,26): {'OK' if servos else 'SKIP/FAIL'}")
+    print(f"Servos (5,6,16): {'OK' if servos else 'SKIP/FAIL'}")
     
     if deps and model and cam and servos:
         print("\n✨ Everything looks good! You are ready to run the streamer.")
