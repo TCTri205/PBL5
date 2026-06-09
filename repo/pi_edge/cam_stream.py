@@ -66,9 +66,12 @@ class CameraStreamer:
         manual_run_duration=2.0,
         jpeg_quality=50,
         ack_timeout=1.5,
+        r_scale=0.85,
+        g_scale=0.90,
+        b_scale=1.15,
+        wb_enabled=True,
         max_frame_retries=3,
         sorter_config=None,
-        auto_wb=True,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -113,7 +116,10 @@ class CameraStreamer:
         # ConveyorController sẽ được tạo trong run_pipeline() SAU KHI camera đã sẵn sàng.
         self.conveyor = None
         self.sorter_config = sorter_config
-        self.auto_wb = auto_wb
+        self.r_scale = r_scale
+        self.g_scale = g_scale
+        self.b_scale = b_scale
+        self.wb_enabled = wb_enabled
         
         # Background Camera Reader
         self._bg_frame = None
@@ -135,30 +141,16 @@ class CameraStreamer:
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         return base64.b64encode(buffer).decode('utf-8')
 
-    def apply_gray_world_wb(self, img):
-        """Tự động cân bằng trắng theo thuật toán Gray World Assumption."""
+    def apply_manual_tint_fix(self, img):
+        """Giảm tint vàng/cam bằng cách nhân tỉ lệ thủ công các kênh màu BGR."""
         if img is None:
             return None
-        # Tính toán trung bình trên các kênh B, G, R
-        b_mean = np.mean(img[:, :, 0])
-        g_mean = np.mean(img[:, :, 1])
-        r_mean = np.mean(img[:, :, 2])
         
-        # Tránh chia cho 0
-        if b_mean == 0 or g_mean == 0 or r_mean == 0:
-            return img
-            
-        gray_mean = (b_mean + g_mean + r_mean) / 3.0
-        
-        scale_b = gray_mean / b_mean
-        scale_g = gray_mean / g_mean
-        scale_r = gray_mean / r_mean
-        
-        # Áp dụng tỉ lệ và clip trong khoảng [0, 255]
         result = img.astype(np.float32)
-        result[:, :, 0] = np.clip(result[:, :, 0] * scale_b, 0, 255)
-        result[:, :, 1] = np.clip(result[:, :, 1] * scale_g, 0, 255)
-        result[:, :, 2] = np.clip(result[:, :, 2] * scale_r, 0, 255)
+        # OpenCV dùng định dạng BGR: Blue (kênh 0), Green (kênh 1), Red (kênh 2)
+        result[:, :, 0] = np.clip(result[:, :, 0] * self.b_scale, 0, 255)
+        result[:, :, 1] = np.clip(result[:, :, 1] * self.g_scale, 0, 255)
+        result[:, :, 2] = np.clip(result[:, :, 2] * self.r_scale, 0, 255)
         
         return result.astype(np.uint8)
 
@@ -467,8 +459,8 @@ class CameraStreamer:
         self.conveyor.start()
 
         ret, frame = self.get_latest_frame()
-        if ret and frame is not None and self.auto_wb:
-            frame = self.apply_gray_world_wb(frame)
+        if ret and frame is not None and self.wb_enabled:
+            frame = self.apply_manual_tint_fix(frame)
 
         if not ret:
             logger.warning("⚠️ Failed to grab manual frame.")
@@ -630,8 +622,8 @@ class CameraStreamer:
                     if not ret:
                         continue
 
-                if self.auto_wb and frame is not None:
-                    frame = self.apply_gray_world_wb(frame)
+                if self.wb_enabled and frame is not None:
+                    frame = self.apply_manual_tint_fix(frame)
 
                 cam_fail_count = 0
                 reinit_fail_count = 0
@@ -858,10 +850,20 @@ async def main():
         help="Max consecutive frame capture failures before camera re-init",
     )
     parser.add_argument(
-        "--no-auto-wb",
-        action="store_false",
-        dest="auto_wb",
-        help="Disable Auto White Balance (Gray World) preprocessing (enabled by default)"
+        "--r-scale", type=float, default=0.85,
+        help="Scale factor for Red channel (default: 0.85)"
+    )
+    parser.add_argument(
+        "--g-scale", type=float, default=0.90,
+        help="Scale factor for Green channel (default: 0.90)"
+    )
+    parser.add_argument(
+        "--b-scale", type=float, default=1.15,
+        help="Scale factor for Blue channel (default: 1.15)"
+    )
+    parser.add_argument(
+        "--no-wb", action="store_true",
+        help="Disable manual BGR white balance adjustment completely"
     )
     # Servo delays config
     parser.add_argument("--delay-cam", type=float, default=5.0, help="Delay for Orange servo (s) [Default: 5.0]")
@@ -917,7 +919,10 @@ async def main():
         ack_timeout=args.ack_timeout,
         max_frame_retries=args.max_frame_retries,
         sorter_config=SORTER_CONFIG,
-        auto_wb=args.auto_wb,
+        r_scale=args.r_scale,
+        g_scale=args.g_scale,
+        b_scale=args.b_scale,
+        wb_enabled=not args.no_wb,
     )
 
     try:
