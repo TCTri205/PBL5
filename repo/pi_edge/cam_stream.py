@@ -10,6 +10,7 @@ import sys
 import logging
 import argparse
 import random
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
 # Tắt log cảnh báo GPU/Discovery của ONNX Runtime (PHẢI đặt trước khi import onnxruntime)
@@ -67,6 +68,7 @@ class CameraStreamer:
         ack_timeout=1.5,
         max_frame_retries=3,
         sorter_config=None,
+        auto_wb=True,
     ):
         """
         Inference + Streaming pipeline for Raspberry Pi.
@@ -111,6 +113,7 @@ class CameraStreamer:
         # ConveyorController sẽ được tạo trong run_pipeline() SAU KHI camera đã sẵn sàng.
         self.conveyor = None
         self.sorter_config = sorter_config
+        self.auto_wb = auto_wb
         
         # Background Camera Reader
         self._bg_frame = None
@@ -131,6 +134,33 @@ class CameraStreamer:
             return None
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality])
         return base64.b64encode(buffer).decode('utf-8')
+
+    def apply_gray_world_wb(self, img):
+        """Tự động cân bằng trắng theo thuật toán Gray World Assumption."""
+        if img is None:
+            return None
+        # Tính toán trung bình trên các kênh B, G, R
+        b_mean = np.mean(img[:, :, 0])
+        g_mean = np.mean(img[:, :, 1])
+        r_mean = np.mean(img[:, :, 2])
+        
+        # Tránh chia cho 0
+        if b_mean == 0 or g_mean == 0 or r_mean == 0:
+            return img
+            
+        gray_mean = (b_mean + g_mean + r_mean) / 3.0
+        
+        scale_b = gray_mean / b_mean
+        scale_g = gray_mean / g_mean
+        scale_r = gray_mean / r_mean
+        
+        # Áp dụng tỉ lệ và clip trong khoảng [0, 255]
+        result = img.astype(np.float32)
+        result[:, :, 0] = np.clip(result[:, :, 0] * scale_b, 0, 255)
+        result[:, :, 1] = np.clip(result[:, :, 1] * scale_g, 0, 255)
+        result[:, :, 2] = np.clip(result[:, :, 2] * scale_r, 0, 255)
+        
+        return result.astype(np.uint8)
 
     async def connect(self):
         """Duy trì kết nối WebSocket tới server."""
@@ -437,6 +467,9 @@ class CameraStreamer:
         self.conveyor.start()
 
         ret, frame = self.get_latest_frame()
+        if ret and frame is not None and self.auto_wb:
+            frame = self.apply_gray_world_wb(frame)
+
         if not ret:
             logger.warning("⚠️ Failed to grab manual frame.")
             if self._manual_stop_task and not self._manual_stop_task.done():
@@ -596,6 +629,9 @@ class CameraStreamer:
                             continue
                     if not ret:
                         continue
+
+                if self.auto_wb and frame is not None:
+                    frame = self.apply_gray_world_wb(frame)
 
                 cam_fail_count = 0
                 reinit_fail_count = 0
@@ -821,6 +857,12 @@ async def main():
         "--max-frame-retries", type=int, default=3,
         help="Max consecutive frame capture failures before camera re-init",
     )
+    parser.add_argument(
+        "--no-auto-wb",
+        action="store_false",
+        dest="auto_wb",
+        help="Disable Auto White Balance (Gray World) preprocessing (enabled by default)"
+    )
     # Servo delays config
     parser.add_argument("--delay-cam", type=float, default=5.0, help="Delay for Orange servo (s) [Default: 5.0]")
     parser.add_argument("--delay-chanh", type=float, default=8.0, help="Delay for Lemon servo (s) [Default: 8.0]")
@@ -875,6 +917,7 @@ async def main():
         ack_timeout=args.ack_timeout,
         max_frame_retries=args.max_frame_retries,
         sorter_config=SORTER_CONFIG,
+        auto_wb=args.auto_wb,
     )
 
     try:
