@@ -59,7 +59,7 @@ def scan_all_pins():
     # Cac chan GPIO pho bien tren Raspberry Pi (BCM numbering)
     common_pins = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
     # Bo qua cac chan dang dung cho motor va servo
-    used_pins = {5, 6, 22, 23, 12}  # servo: 5,6,12 | motor: 22,23
+    used_pins = {5, 6, 22, 23, 26}  # servo: 5,6,26 | motor: 22,23
     
     print("\n" + "=" * 60)
     print("   QUET TAT CA CAC CHAN GPIO (BCM)")
