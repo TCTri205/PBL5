@@ -8,3 +8,4 @@ __pycache__/
 test_errors.txt
 pi_edge/model/*.onnx
 !pi_edge/model/best.onnx
+.omg/
