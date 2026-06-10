@@ -110,7 +110,7 @@ def main():
     print(f"Dependencies: {'OK' if deps else 'FAIL'}")
     print(f"Model File:   {'OK' if model else 'MISSING'}")
     print(f"Camera:       {'OK' if cam else 'NOT FOUND'}")
-    print(f"Servos (5,6,26): {'OK' if servos else 'SKIP/FAIL'}")
+    print(f"Servos (5,6,16): {'OK' if servos else 'SKIP/FAIL'}")
     
     if deps and model and cam and servos:
         print("\n✨ Everything looks good! You are ready to run the streamer.")
